@@ -9,11 +9,15 @@ A simple, barebones bot example perfect for beginners learning to build Towns bo
 - **Sending messages**: Posting messages to channels
 - **Adding reactions**: Attaching emoji reactions to messages
 - **Reaction events**: Responding to user reactions
+- **$TOWNS airdrops**: `/drop fixed` (all channel members) or `/drop reaction` (🤭 reactors)
 
 ## Slash Commands
 
 - `/help` - Shows available commands and message triggers
 - `/time` - Displays the current server time
+- `/drop fixed <amount>` - Airdrop each channel member a fixed amount of $TOWNS
+- `/drop reaction <total>` - Airdrop $TOWNS split among users who react 🤭; then `/drop-close <messageId>` to distribute
+- `/drop-close <messageId>` - Close a reaction airdrop and send $TOWNS to reactors
 
 ## Message Triggers
 
