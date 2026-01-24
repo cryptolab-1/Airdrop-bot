@@ -33,7 +33,7 @@ bot.onSlashCommand('help', async (handler, { channelId }) => {
         channelId,
         '**Available Commands:**\n\n' +
             '• `/help` - Show this help message\n\n' +
-            '• `/drop <amount>` - Airdrop each channel member that amount of $TOWNS\n\n' +
+            '• `/drop <amount>` - Airdrop total $TOWNS split among all channel members\n\n' +
             '• `/drop react <amount>` - Airdrop $TOWNS split among users who react 💸 to join; creator reacts ❌ to cancel, 🚀 to launch',
     )
 })
@@ -74,15 +74,16 @@ bot.onSlashCommand('drop', async (handler, event) => {
             )
             return
         }
-        const total = totalRaw * BigInt(memberAddresses.length)
         pendingDrops.set(userId as `0x${string}`, {
             mode: 'fixed',
-            totalRaw: total,
+            totalRaw,
             channelId,
             spaceId,
             creatorId: userId as `0x${string}`,
             memberAddresses,
         })
+        const n = memberAddresses.length
+        const per = totalRaw / BigInt(n)
         const formId = `drop-confirm-fixed-${Date.now()}`
         await handler.sendInteractionRequest(
             channelId,
@@ -100,7 +101,7 @@ bot.onSlashCommand('drop', async (handler, event) => {
         )
         await handler.sendMessage(
             channelId,
-            `You'll approve **${formatEther(total)} $TOWNS**, then sign 1 or more batch tx(s) (up to **${MAX_TRANSFERS_PER_BATCH}** transfers per tx). Confirm above.`,
+            `You'll approve **${formatEther(totalRaw)} $TOWNS** total, split among **${n}** members (**${formatEther(per)}** each). Then sign 1 or more batch tx(s) (up to **${MAX_TRANSFERS_PER_BATCH}** transfers per tx). Confirm above.`,
             { mentions: [{ userId, displayName: 'Creator' }] },
         )
         return

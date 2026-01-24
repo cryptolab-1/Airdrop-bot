@@ -1,6 +1,6 @@
 /**
  * Airdrop state and helpers for $TOWNS airdrops.
- * - Fixed: airdrop every channel member a fixed amount.
+ * - Fixed: total amount split among all channel members.
  * - Reaction: airdrop active users who react 💸 (money with wings); total split between them.
  */
 
@@ -143,7 +143,8 @@ export async function getChannelMemberIds(
 }
 
 /**
- * Resolve user IDs to smart accounts; skip nulls.
+ * Resolve user IDs to wallet addresses. Uses linked smart account when available,
+ * otherwise falls back to userId (Towns wallet address).
  */
 export async function resolveMemberAddresses(
     bot: AnyBot,
@@ -154,7 +155,7 @@ export async function resolveMemberAddresses(
         const addr = await getSmartAccountFromUserId(bot as Bot<BotCommand[]>, {
             userId: uid as Address,
         })
-        if (addr) out.push(addr)
+        out.push((addr ?? (uid as Address)))
     }
     return out
 }

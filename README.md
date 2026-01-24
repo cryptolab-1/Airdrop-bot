@@ -5,12 +5,12 @@ A simple, barebones bot example perfect for beginners learning to build Towns bo
 # Features
 
 - **Slash commands**: `/help`, `/drop`
-- **$TOWNS airdrops**: `/drop <amount>` (all channel members) or `/drop react <amount>` (💸 reactors). Creator reacts ❌ to cancel, 🚀 to launch. Distribution uses **Multicall3** batches (up to **80** transfers per tx); you sign **approve** once, then **1+ batch** tx(s).
+- **$TOWNS airdrops**: `/drop <amount>` (total split among all channel members) or `/drop react <amount>` (💸 reactors). Creator reacts ❌ to cancel, 🚀 to launch. Distribution uses **Multicall3** batches (up to **80** transfers per tx); you sign **approve** once, then **1+ batch** tx(s).
 
 ## Slash Commands
 
 - `/help` - Show available commands
-- `/drop <amount>` - Airdrop each channel member that amount of $TOWNS
+- `/drop <amount>` - Airdrop total $TOWNS split among all channel members
 - `/drop react <amount>` - Airdrop $TOWNS split among users who react 💸 to join; creator reacts ❌ to cancel, 🚀 to launch
 
 # Setup
