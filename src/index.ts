@@ -7,11 +7,11 @@ import {
     formatEther,
     parseEther,
     pendingDrops,
+    pendingCloseDistributes,
     reactionAirdrops,
     getChannelMemberIds,
     resolveMemberAddresses,
-    distributeFromCreator,
-    encodeApprove,
+    encodeTransfer,
     isMoneyMouth,
     moneyMouthEmoji,
 } from './airdrop'
@@ -125,8 +125,7 @@ bot.onSlashCommand('drop', async (handler, event) => {
     )
     await handler.sendMessage(
         channelId,
-        `Approve **${formatEther(totalRaw)} $TOWNS** for the reaction airdrop. ` +
-            `I'll post a message; users who react ${moneyMouthEmoji()} will share the total. Tokens stay in your wallet until distribution. Confirm above.`,
+        `I'll post an airdrop message; users who react ${moneyMouthEmoji()} will share **${formatEther(totalRaw)} $TOWNS**. You'll sign transfer(s) when you close. Confirm above.`,
         { mentions: [{ userId, displayName: 'Creator' }] },
     )
 })
@@ -152,7 +151,7 @@ bot.onSlashCommand('drop_close', async (handler, event) => {
         reactionAirdrops.delete(messageId)
         await handler.sendMessage(
             channelId,
-            'No one reacted. Airdrop cancelled. Tokens remain in your wallet (approval unused).',
+            'No one reacted. Airdrop cancelled. Tokens remain in your wallet.',
             { mentions: [{ userId: airdrop.creatorId, displayName: 'Creator' }] },
         )
         return
@@ -164,20 +163,38 @@ bot.onSlashCommand('drop_close', async (handler, event) => {
     }
     const resolved = await resolveMemberAddresses(bot as AnyBot, [airdrop.creatorId]).then((a) => a[0])
     const creatorWallet = (resolved ?? airdrop.creatorId) as `0x${string}`
-    try {
-        await distributeFromCreator(bot as AnyBot, creatorWallet, recipientAddresses, airdrop.totalRaw, 'reaction')
-    } catch (e) {
-        await handler.sendMessage(
-            channelId,
-            `Airdrop distribution failed: ${e instanceof Error ? e.message : String(e)}`,
-        )
-        return
-    }
-    reactionAirdrops.delete(messageId)
-    const per = airdrop.totalRaw / BigInt(recipientAddresses.length)
+    const amountPer = airdrop.totalRaw / BigInt(recipientAddresses.length)
+    pendingCloseDistributes.set(userId as `0x${string}`, {
+        recipients: recipientAddresses,
+        amountPer,
+        channelId,
+        messageId,
+        creatorId: airdrop.creatorId,
+        index: 0,
+    })
+    const data = encodeTransfer(recipientAddresses[0]!, amountPer)
+    await handler.sendInteractionRequest(
+        channelId,
+        {
+            type: 'transaction',
+            id: `drop-close-tx-${Date.now()}`,
+            title: 'Distribute $TOWNS',
+            subtitle: `Transfer ${formatEther(amountPer)} $TOWNS (1 / ${recipientAddresses.length})`,
+            tx: {
+                chainId: '8453',
+                to: TOWNS_ADDRESS as `0x${string}`,
+                value: '0',
+                data,
+                signerWallet: creatorWallet,
+            },
+            recipient: userId as `0x${string}`,
+        },
+        { threadId: event.threadId, replyId: event.eventId },
+    )
     await handler.sendMessage(
         channelId,
-        `Airdrop closed. **${recipientAddresses.length}** recipients received **${formatEther(per)} $TOWNS** each from your wallet.`,
+        `Sign **${recipientAddresses.length}** transfer(s) from your wallet (1 / ${recipientAddresses.length})…`,
+        { mentions: [{ userId: airdrop.creatorId, displayName: 'Creator' }] },
     )
 })
 
@@ -190,7 +207,7 @@ bot.onReaction(async (handler, { reaction, channelId, messageId, userId }) => {
             reactionAirdrops.delete(messageId)
             await handler.sendMessage(
                 channelId,
-                'Airdrop cancelled by creator. Tokens remain in your wallet (approval unused).',
+                'Airdrop cancelled by creator. Tokens remain in your wallet.',
                 { mentions: [{ userId: airdrop.creatorId, displayName: 'Creator' }] },
             )
             return
@@ -228,91 +245,9 @@ bot.onInteractionResponse(async (handler, event) => {
         const resolved = await resolveMemberAddresses(bot as AnyBot, [userId]).then((a) => a[0])
         const creatorWallet = (resolved ?? userId) as `0x${string}`
         pending.creatorWallet = creatorWallet
-        const data = encodeApprove(bot.appAddress, pending.totalRaw)
-        await handler.sendInteractionRequest(
-            channelId,
-            {
-                type: 'transaction',
-                id: `drop-tx-${Date.now()}`,
-                title: 'Approve $TOWNS',
-                subtitle: `Approve ${formatEther(pending.totalRaw)} $TOWNS for airdrop`,
-                tx: {
-                    chainId: '8453',
-                    to: TOWNS_ADDRESS as `0x${string}`,
-                    value: '0',
-                    data,
-                    signerWallet: creatorWallet,
-                },
-                recipient: userId as `0x${string}`,
-            },
-            { threadId: event.threadId },
-        )
-        await handler.sendMessage(
-            channelId,
-            'Sign the transaction to **approve** $TOWNS. Tokens stay in your wallet until distribution.',
-            { mentions: [{ userId, displayName: 'Creator' }] },
-        )
-        return
-    }
 
-    if (pl?.case === 'transaction') {
-        const tx = pl.value as { requestId: string; txHash?: string; error?: string }
-        const pending = pendingDrops.get(userId as `0x${string}`)
-        if (!pending) return
-        if (tx.error) {
+        if (pending.mode === 'reaction') {
             pendingDrops.delete(userId as `0x${string}`)
-            await handler.sendMessage(
-                channelId,
-                `Transaction rejected: ${tx.error}`,
-                { mentions: [{ userId, displayName: 'Creator' }] },
-            )
-            return
-        }
-        if (!tx.txHash) return
-        let receipt: { status: string }
-        try {
-            receipt = await waitForTransactionReceipt(bot.viem, { hash: tx.txHash as `0x${string}` })
-        } catch (e) {
-            pendingDrops.delete(userId as `0x${string}`)
-            await handler.sendMessage(
-                channelId,
-                `Failed to verify transaction: ${e instanceof Error ? e.message : String(e)}`,
-            )
-            return
-        }
-        if (receipt.status !== 'success') {
-            pendingDrops.delete(userId as `0x${string}`)
-            await handler.sendMessage(channelId, 'Transaction failed on-chain.')
-            return
-        }
-        const mode = pending.mode
-        pendingDrops.delete(userId as `0x${string}`)
-
-        if (mode === 'fixed' && pending.memberAddresses && pending.memberAddresses.length > 0 && pending.creatorWallet) {
-            try {
-                await distributeFromCreator(
-                    bot as AnyBot,
-                    pending.creatorWallet,
-                    pending.memberAddresses,
-                    pending.totalRaw,
-                    'fixed',
-                )
-            } catch (e) {
-                await handler.sendMessage(
-                    channelId,
-                    `Distribution failed: ${e instanceof Error ? e.message : String(e)}`,
-                )
-                return
-            }
-            const per = pending.totalRaw / BigInt(pending.memberAddresses.length)
-            await handler.sendMessage(
-                channelId,
-                `Airdrop done. **${pending.memberAddresses.length}** members received **${formatEther(per)} $TOWNS** each from your wallet.`,
-            )
-            return
-        }
-
-        if (mode === 'reaction') {
             const { eventId: msgEventId } = await handler.sendMessage(
                 channelId,
                 `**$TOWNS Airdrop** · React ${moneyMouthEmoji()} to join. Total: **${formatEther(pending.totalRaw)} $TOWNS**. Creator: <@${pending.creatorId}>. React ${CANCEL_EMOJI} to cancel.`,
@@ -330,7 +265,184 @@ bot.onInteractionResponse(async (handler, event) => {
                 `Airdrop live. Message ID: \`${msgEventId}\`. React ${moneyMouthEmoji()} to join · React ${CANCEL_EMOJI} to cancel · \`/drop_close ${msgEventId}\` to distribute.`,
                 { mentions: [{ userId: pending.creatorId, displayName: 'Creator' }] },
             )
+            return
         }
+
+        pending.distributeRecipients = pending.memberAddresses!
+        pending.distributeIndex = 0
+        const amountPer = pending.totalRaw / BigInt(pending.memberAddresses!.length)
+        const to = pending.memberAddresses![0]!
+        const data = encodeTransfer(to, amountPer)
+        await handler.sendInteractionRequest(
+            channelId,
+            {
+                type: 'transaction',
+                id: `drop-fixed-tx-${Date.now()}-0`,
+                title: 'Distribute $TOWNS',
+                subtitle: `Transfer ${formatEther(amountPer)} $TOWNS (1 / ${pending.memberAddresses!.length})`,
+                tx: {
+                    chainId: '8453',
+                    to: TOWNS_ADDRESS as `0x${string}`,
+                    value: '0',
+                    data,
+                    signerWallet: creatorWallet,
+                },
+                recipient: userId as `0x${string}`,
+            },
+            { threadId: event.threadId },
+        )
+        await handler.sendMessage(
+            channelId,
+            `Sign **${pending.memberAddresses!.length}** transfer(s) from your wallet (1 / ${pending.memberAddresses!.length})…`,
+            { mentions: [{ userId, displayName: 'Creator' }] },
+        )
+        return
+    }
+
+    if (pl?.case === 'transaction') {
+        const tx = pl.value as { requestId: string; txHash?: string; error?: string }
+        const uid = userId as `0x${string}`
+
+        const closeDist = pendingCloseDistributes.get(uid)
+        if (closeDist) {
+            if (tx.error) {
+                pendingCloseDistributes.delete(uid)
+                await handler.sendMessage(
+                    channelId,
+                    `Transfer rejected: ${tx.error}. Airdrop still open; you can \`/drop_close ${closeDist.messageId}\` again.`,
+                    { mentions: [{ userId: closeDist.creatorId, displayName: 'Creator' }] },
+                )
+                return
+            }
+            if (!tx.txHash) return
+            let receipt: { status: string }
+            try {
+                receipt = await waitForTransactionReceipt(bot.viem, { hash: tx.txHash as `0x${string}` })
+            } catch (e) {
+                pendingCloseDistributes.delete(uid)
+                await handler.sendMessage(
+                    channelId,
+                    `Failed to verify transfer: ${e instanceof Error ? e.message : String(e)}`,
+                )
+                return
+            }
+            if (receipt.status !== 'success') {
+                pendingCloseDistributes.delete(uid)
+                await handler.sendMessage(channelId, 'Transfer failed on-chain. Airdrop not closed.')
+                return
+            }
+            const next = closeDist.index + 1
+            if (next >= closeDist.recipients.length) {
+                pendingCloseDistributes.delete(uid)
+                reactionAirdrops.delete(closeDist.messageId)
+                await handler.sendMessage(
+                    channelId,
+                    `Airdrop closed. **${closeDist.recipients.length}** recipients received **${formatEther(closeDist.amountPer)} $TOWNS** each from your wallet.`,
+                    { mentions: [{ userId: closeDist.creatorId, displayName: 'Creator' }] },
+                )
+                return
+            }
+            closeDist.index = next
+            const to = closeDist.recipients[next]!
+            const data = encodeTransfer(to, closeDist.amountPer)
+            const creatorWallet = (await resolveMemberAddresses(bot as AnyBot, [closeDist.creatorId]).then((a) => a[0]) ?? closeDist.creatorId) as `0x${string}`
+            await handler.sendInteractionRequest(
+                channelId,
+                {
+                    type: 'transaction',
+                    id: `drop-close-tx-${Date.now()}-${next}`,
+                    title: 'Distribute $TOWNS',
+                    subtitle: `Transfer ${formatEther(closeDist.amountPer)} $TOWNS (${next + 1} / ${closeDist.recipients.length})`,
+                    tx: {
+                        chainId: '8453',
+                        to: TOWNS_ADDRESS as `0x${string}`,
+                        value: '0',
+                        data,
+                        signerWallet: creatorWallet,
+                    },
+                    recipient: uid,
+                },
+                { threadId: event.threadId },
+            )
+            await handler.sendMessage(
+                channelId,
+                `Sign transfer ${next + 1} / ${closeDist.recipients.length}…`,
+                { mentions: [{ userId: closeDist.creatorId, displayName: 'Creator' }] },
+            )
+            return
+        }
+
+        const pending = pendingDrops.get(uid)
+        if (!pending) return
+        if (tx.error) {
+            pendingDrops.delete(uid)
+            await handler.sendMessage(
+                channelId,
+                `Transaction rejected: ${tx.error}`,
+                { mentions: [{ userId, displayName: 'Creator' }] },
+            )
+            return
+        }
+        if (!tx.txHash) return
+        let receipt: { status: string }
+        try {
+            receipt = await waitForTransactionReceipt(bot.viem, { hash: tx.txHash as `0x${string}` })
+        } catch (e) {
+            pendingDrops.delete(uid)
+            await handler.sendMessage(
+                channelId,
+                `Failed to verify transaction: ${e instanceof Error ? e.message : String(e)}`,
+            )
+            return
+        }
+        if (receipt.status !== 'success') {
+            pendingDrops.delete(uid)
+            await handler.sendMessage(channelId, 'Transaction failed on-chain.')
+            return
+        }
+
+        if (pending.distributeRecipients !== undefined && pending.creatorWallet) {
+            const idx = (pending.distributeIndex ?? 0) + 1
+            if (idx >= pending.distributeRecipients.length) {
+                pendingDrops.delete(uid)
+                const per = pending.totalRaw / BigInt(pending.distributeRecipients.length)
+                await handler.sendMessage(
+                    channelId,
+                    `Airdrop done. **${pending.distributeRecipients.length}** members received **${formatEther(per)} $TOWNS** each from your wallet.`,
+                )
+                return
+            }
+            pending.distributeIndex = idx
+            const to = pending.distributeRecipients[idx]!
+            const amountPer = pending.totalRaw / BigInt(pending.distributeRecipients.length)
+            const data = encodeTransfer(to, amountPer)
+            await handler.sendInteractionRequest(
+                channelId,
+                {
+                    type: 'transaction',
+                    id: `drop-fixed-tx-${Date.now()}-${idx}`,
+                    title: 'Distribute $TOWNS',
+                    subtitle: `Transfer ${formatEther(amountPer)} $TOWNS (${idx + 1} / ${pending.distributeRecipients.length})`,
+                    tx: {
+                        chainId: '8453',
+                        to: TOWNS_ADDRESS as `0x${string}`,
+                        value: '0',
+                        data,
+                        signerWallet: pending.creatorWallet,
+                    },
+                    recipient: uid,
+                },
+                { threadId: event.threadId },
+            )
+            await handler.sendMessage(
+                channelId,
+                `Sign transfer ${idx + 1} / ${pending.distributeRecipients.length}…`,
+                { mentions: [{ userId, displayName: 'Creator' }] },
+            )
+            return
+        }
+
+        const mode = pending.mode
     }
 })
 

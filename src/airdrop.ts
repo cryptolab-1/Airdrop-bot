@@ -8,7 +8,6 @@ import type { Address } from 'viem'
 import { parseEther, formatEther } from 'viem'
 import { erc20Abi } from 'viem'
 import { encodeFunctionData } from 'viem'
-import { execute } from 'viem/experimental/erc7821'
 import { waitForTransactionReceipt } from 'viem/actions'
 import { getSmartAccountFromUserId } from '@towns-protocol/bot'
 import type { Bot, BotCommand } from '@towns-protocol/bot'
@@ -28,6 +27,9 @@ export type PendingDrop = {
     creatorId: Address
     creatorWallet?: Address
     memberAddresses?: Address[] // fixed mode: resolved smart accounts
+    /** Fixed-mode distribution: user signs each transfer. */
+    distributeRecipients?: Address[]
+    distributeIndex?: number
 }
 
 export type ReactionAirdrop = {
@@ -37,8 +39,18 @@ export type ReactionAirdrop = {
     reactorIds: Set<string>
 }
 
+export type PendingCloseDistribute = {
+    recipients: Address[]
+    amountPer: bigint
+    channelId: string
+    messageId: string
+    creatorId: Address
+    index: number
+}
+
 export const pendingDrops = new Map<Address, PendingDrop>()
 export const reactionAirdrops = new Map<string, ReactionAirdrop>()
+export const pendingCloseDistributes = new Map<Address, PendingCloseDistribute>()
 
 export function moneyMouthEmoji(): string {
     return MONEY_MOUTH
@@ -86,43 +98,13 @@ export async function resolveMemberAddresses(
 }
 
 /**
- * Distribute TOWNS from creator's wallet to recipients via transferFrom.
- * Creator must have approved bot.appAddress for totalRaw.
+ * Encode ERC20 transfer(recipient, amount) for creator to send from their wallet.
  */
-export async function distributeFromCreator(
-    bot: AnyBot,
-    creatorWallet: Address,
-    recipients: Address[],
-    totalRaw: bigint,
-    _mode: AirdropMode
-): Promise<void> {
-    if (recipients.length === 0) return
-    const amountPer = totalRaw / BigInt(recipients.length)
-    const calls = recipients.map((to) => ({
-        to: TOWNS_ADDRESS as Address,
-        abi: erc20Abi,
-        functionName: 'transferFrom' as const,
-        args: [creatorWallet, to, amountPer] as [Address, Address, bigint],
-    }))
-    const hash = await execute(bot.viem, {
-        address: bot.appAddress,
-        account: bot.viem.account,
-        calls,
-    })
-    await waitForTransactionReceipt(bot.viem, { hash })
-}
-
-/**
- * Encode ERC20 approve(spender, amount) for creator to approve bot.
- */
-export function encodeApprove(
-    spender: Address,
-    amountRaw: bigint
-): `0x${string}` {
+export function encodeTransfer(recipient: Address, amountRaw: bigint): `0x${string}` {
     return encodeFunctionData({
         abi: erc20Abi,
-        functionName: 'approve',
-        args: [spender, amountRaw],
+        functionName: 'transfer',
+        args: [recipient, amountRaw],
     })
 }
 
