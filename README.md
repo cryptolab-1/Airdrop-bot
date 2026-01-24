@@ -16,8 +16,8 @@ A simple, barebones bot example perfect for beginners learning to build Towns bo
 - `/help` - Shows available commands and message triggers
 - `/time` - Displays the current server time
 - `/drop fixed <amount>` - Airdrop each channel member a fixed amount of $TOWNS
-- `/drop reaction <total>` - Airdrop $TOWNS split among users who react 🤭; then `/drop-close <messageId>` to distribute
-- `/drop-close <messageId>` - Close a reaction airdrop and send $TOWNS to reactors
+- `/drop reaction <total>` - Airdrop $TOWNS split among users who react 🤭; then `/drop_close <messageId>` to distribute
+- `/drop_close <messageId>` - Close a reaction airdrop and send $TOWNS to reactors
 
 ## Message Triggers
 

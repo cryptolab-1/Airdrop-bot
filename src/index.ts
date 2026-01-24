@@ -29,7 +29,7 @@ bot.onSlashCommand('help', async (handler, { channelId }) => {
             '• `/time` - Get the current time\n' +
             '• `/drop fixed <amount>` - Airdrop each channel member a fixed amount of $TOWNS\n' +
             '• `/drop reaction <total>` - Airdrop $TOWNS split among users who react 🤭\n' +
-            '• `/drop-close <messageId>` - Close a reaction airdrop and distribute\n\n' +
+            '• `/drop_close <messageId>` - Close a reaction airdrop and distribute\n\n' +
             '**Message Triggers:**\n\n' +
             "• Mention me - I'll respond\n" +
             "• React with 👋 - I'll wave back\n" +
@@ -143,11 +143,11 @@ bot.onSlashCommand('drop', async (handler, event) => {
     )
 })
 
-bot.onSlashCommand('drop-close', async (handler, event) => {
+bot.onSlashCommand('drop_close', async (handler, event) => {
     const { channelId, userId, args, isDm } = event
     const messageId = args[0]?.trim()
     if (!messageId) {
-        await handler.sendMessage(channelId, 'Usage: `/drop-close <messageId>`. Use the airdrop message ID.')
+        await handler.sendMessage(channelId, 'Usage: `/drop_close <messageId>`. Use the airdrop message ID.')
         return
     }
     const airdrop = reactionAirdrops.get(messageId)
@@ -352,7 +352,7 @@ bot.onInteractionResponse(async (handler, event) => {
             })
             await handler.sendMessage(
                 channelId,
-                `Airdrop live. Message ID: \`${msgEventId}\`. React ${moneyMouthEmoji()} to join, then \`/drop-close ${msgEventId}\` to distribute.`,
+                `Airdrop live. Message ID: \`${msgEventId}\`. React ${moneyMouthEmoji()} to join, then \`/drop_close ${msgEventId}\` to distribute.`,
                 { mentions: [{ userId: pending.creatorId, displayName: 'Creator' }] },
             )
         }
@@ -360,4 +360,9 @@ bot.onInteractionResponse(async (handler, event) => {
 })
 
 const app = bot.start()
+
+app.get('/.well-known/agent-metadata.json', async (c) => {
+    return c.json(await bot.getIdentityMetadata())
+})
+
 export default app
