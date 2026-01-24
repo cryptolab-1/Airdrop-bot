@@ -4,32 +4,15 @@ A simple, barebones bot example perfect for beginners learning to build Towns bo
 
 # Features
 
-- **Slash commands**: Registering and handling `/commands`
-- **Message handling**: Detecting keywords in messages
-- **Sending messages**: Posting messages to channels
-- **Adding reactions**: Attaching emoji reactions to messages
-- **Reaction events**: Responding to user reactions
+- **Slash commands**: `/help`, `/drop`, `/drop_close`
 - **$TOWNS airdrops**: `/drop fixed` (all channel members) or `/drop reaction` (🤭 reactors)
 
 ## Slash Commands
 
-- `/help` - Shows available commands and message triggers
-- `/time` - Displays the current server time
+- `/help` - Show available commands
 - `/drop fixed <amount>` - Airdrop each channel member a fixed amount of $TOWNS
 - `/drop reaction <total>` - Airdrop $TOWNS split among users who react 🤭; then `/drop_close <messageId>` to distribute
 - `/drop_close <messageId>` - Close a reaction airdrop and send $TOWNS to reactors
-
-## Message Triggers
-
-- Say "hello" - Bot greets you back
-- Say "ping" - Bot responds with "Pong!" and latency
-- Say "react" - Bot adds a thumbs up reaction to your message
-
-You will need to mention the bot if you're using the `Mentions, Commands, Replies & Reactions` message behavior for your bot.
-
-## Reaction Handling
-
-- React with 👋 to any message - Bot responds with "I saw your wave!"
 
 # Setup
 
@@ -64,18 +47,9 @@ Once the bot is running, installed to a space and added to a channel:
 
 **Try the slash commands:**
 
-- `/help` - See all available features
-- `/time` - Get the current time
-
-**Try the message triggers:**
-
-- Type "hello" anywhere in your message
-- Type "ping" to check bot latency
-- Type "react" to get a reaction
-
-**Try reactions:**
-
-- Add a 👋 reaction to any message
+- `/help` - See all available commands
+- `/drop fixed <amount>` or `/drop reaction <total>` - Create an airdrop
+- `/drop_close <messageId>` - Close a reaction airdrop and distribute
 
 # Code Structure
 
@@ -90,9 +64,9 @@ Defines the slash commands available to users. Commands registered here appear i
 Main bot logic with:
 
 1. **Bot initialization** (`makeTownsBot`) - Creates bot instance with credentials and commands
-2. **Slash command handlers** (`onSlashCommand`) - Handle `/help` and `/time` commands
-3. **Message handler** (`onMessage`) - Respond to message keywords (hello, ping, react)
-4. **Reaction handler** (`onReaction`) - Respond to emoji reactions (👋)
+2. **Slash command handlers** (`onSlashCommand`) - Handle `/help`, `/drop`, `/drop_close`
+3. **Reaction handler** (`onReaction`) - Track 🤭 reactors for reaction airdrops
+4. **Interaction response handler** (`onInteractionResponse`) - Forms and transaction confirmations
 5. **Bot server setup** (`bot.start()`) - Starts the bot server with a Hono HTTP server
 
 ## Extending this Bot
@@ -103,8 +77,5 @@ To add your own features:
    - Add to `src/commands.ts`
    - Go to `src/index.ts` and create a handler with `bot.onSlashCommand('yourcommand', async (handler, event) => { ... })`
 
-2. **Add message triggers:**
-   - Add conditions in the `bot.onMessage()` handler
-
-3. **Handle more events:**
+2. **Handle more events:**
    - Use `bot.onReaction()`, `bot.onMessageEdit()`, `bot.onChannelJoin()`, etc.

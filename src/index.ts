@@ -10,9 +10,8 @@ import {
     reactionAirdrops,
     getChannelMemberIds,
     resolveMemberAddresses,
-    distribute,
-    encodeTransferToBot,
-    refundCreator,
+    distributeFromCreator,
+    encodeApprove,
     isMoneyMouth,
     moneyMouthEmoji,
 } from './airdrop'
@@ -26,22 +25,10 @@ bot.onSlashCommand('help', async (handler, { channelId }) => {
         channelId,
         '**Available Commands:**\n\n' +
             '• `/help` - Show this help message\n' +
-            '• `/time` - Get the current time\n' +
             '• `/drop fixed <amount>` - Airdrop each channel member a fixed amount of $TOWNS\n' +
             '• `/drop reaction <total>` - Airdrop $TOWNS split among users who react 🤭\n' +
-            '• `/drop_close <messageId>` - Close a reaction airdrop and distribute\n\n' +
-            '**Message Triggers:**\n\n' +
-            "• Mention me - I'll respond\n" +
-            "• React with 👋 - I'll wave back\n" +
-            '• Say "hello" - I\'ll greet you back\n' +
-            '• Say "ping" - I\'ll show latency\n' +
-            '• Say "react" - I\'ll add a reaction\n',
+            '• `/drop_close <messageId>` - Close a reaction airdrop and distribute',
     )
-})
-
-bot.onSlashCommand('time', async (handler, { channelId }) => {
-    const currentTime = new Date().toLocaleString()
-    await handler.sendMessage(channelId, `Current time: ${currentTime} ⏰`)
 })
 
 bot.onSlashCommand('drop', async (handler, event) => {
@@ -105,8 +92,8 @@ bot.onSlashCommand('drop', async (handler, event) => {
         )
         await handler.sendMessage(
             channelId,
-            `Send **${formatEther(total)} $TOWNS** to fund the airdrop for **${memberAddresses.length}** members (` +
-                `${formatEther(totalRaw)} each). Confirm above.`,
+            `Approve **${formatEther(total)} $TOWNS** for the airdrop to **${memberAddresses.length}** members (` +
+                `${formatEther(totalRaw)} each). Tokens stay in your wallet until distribution. Confirm above.`,
             { mentions: [{ userId, displayName: 'Creator' }] },
         )
         return
@@ -137,8 +124,8 @@ bot.onSlashCommand('drop', async (handler, event) => {
     )
     await handler.sendMessage(
         channelId,
-        `Send **${formatEther(totalRaw)} $TOWNS** to fund the reaction airdrop. ` +
-            `I'll post a message; users who react ${moneyMouthEmoji()} will share the total. Confirm above.`,
+        `Approve **${formatEther(totalRaw)} $TOWNS** for the reaction airdrop. ` +
+            `I'll post a message; users who react ${moneyMouthEmoji()} will share the total. Tokens stay in your wallet until distribution. Confirm above.`,
         { mentions: [{ userId, displayName: 'Creator' }] },
     )
 })
@@ -162,20 +149,11 @@ bot.onSlashCommand('drop_close', async (handler, event) => {
     const reactors = Array.from(airdrop.reactorIds)
     if (reactors.length === 0) {
         reactionAirdrops.delete(messageId)
-        try {
-            await refundCreator(bot as AnyBot, airdrop.creatorId, airdrop.totalRaw)
-            await handler.sendMessage(
-                channelId,
-                'No one reacted. Airdrop cancelled; TOWNS refunded to creator.',
-                { mentions: [{ userId: airdrop.creatorId, displayName: 'Creator' }] },
-            )
-        } catch (e) {
-            await handler.sendMessage(
-                channelId,
-                `No reactors. Refund failed: ${e instanceof Error ? e.message : String(e)}. Creator may need a linked wallet.`,
-                { mentions: [{ userId: airdrop.creatorId, displayName: 'Creator' }] },
-            )
-        }
+        await handler.sendMessage(
+            channelId,
+            'No one reacted. Airdrop cancelled. Tokens remain in your wallet (approval unused).',
+            { mentions: [{ userId: airdrop.creatorId, displayName: 'Creator' }] },
+        )
         return
     }
     const recipientAddresses = await resolveMemberAddresses(bot as AnyBot, reactors)
@@ -183,8 +161,17 @@ bot.onSlashCommand('drop_close', async (handler, event) => {
         await handler.sendMessage(channelId, 'No reactors have linked wallets; cannot distribute.')
         return
     }
-        try {
-                await distribute(bot as AnyBot, recipientAddresses, airdrop.totalRaw, 'reaction')
+    const creatorWallet = await resolveMemberAddresses(bot as AnyBot, [airdrop.creatorId]).then((a) => a[0])
+    if (!creatorWallet) {
+        await handler.sendMessage(
+            channelId,
+            'Creator has no linked wallet; cannot distribute.',
+            { mentions: [{ userId: airdrop.creatorId, displayName: 'Creator' }] },
+        )
+        return
+    }
+    try {
+        await distributeFromCreator(bot as AnyBot, creatorWallet, recipientAddresses, airdrop.totalRaw, 'reaction')
     } catch (e) {
         await handler.sendMessage(
             channelId,
@@ -196,31 +183,11 @@ bot.onSlashCommand('drop_close', async (handler, event) => {
     const per = airdrop.totalRaw / BigInt(recipientAddresses.length)
     await handler.sendMessage(
         channelId,
-        `Airdrop closed. **${recipientAddresses.length}** recipients received **${formatEther(per)} $TOWNS** each.`,
+        `Airdrop closed. **${recipientAddresses.length}** recipients received **${formatEther(per)} $TOWNS** each from your wallet.`,
     )
 })
 
-bot.onMessage(async (handler, { message, channelId, eventId, createdAt }) => {
-    if (message.includes('hello')) {
-        await handler.sendMessage(channelId, 'Hello there! 👋')
-        return
-    }
-    if (message.includes('ping')) {
-        const now = new Date()
-        await handler.sendMessage(channelId, `Pong! 🏓 ${now.getTime() - createdAt.getTime()}ms`)
-        return
-    }
-    if (message.includes('react')) {
-        await handler.sendReaction(channelId, eventId, '👍')
-        return
-    }
-})
-
 bot.onReaction(async (handler, { reaction, channelId, messageId, userId }) => {
-    if (reaction === '👋') {
-        await handler.sendMessage(channelId, 'I saw your wave! 👋')
-        return
-    }
     if (isMoneyMouth(reaction)) {
         const airdrop = reactionAirdrops.get(messageId)
         if (airdrop) airdrop.reactorIds.add(userId)
@@ -255,19 +222,20 @@ bot.onInteractionResponse(async (handler, event) => {
             pendingDrops.delete(userId as `0x${string}`)
             await handler.sendMessage(
                 channelId,
-                'You need a linked wallet to fund the airdrop.',
+                'You need a linked wallet to approve the airdrop.',
                 { mentions: [{ userId, displayName: 'Creator' }] },
             )
             return
         }
-        const data = encodeTransferToBot(bot.appAddress, pending.totalRaw)
+        pending.creatorWallet = creatorWallet
+        const data = encodeApprove(bot.appAddress, pending.totalRaw)
         await handler.sendInteractionRequest(
             channelId,
             {
                 type: 'transaction',
                 id: `drop-tx-${Date.now()}`,
-                title: 'Fund airdrop',
-                subtitle: `Send ${formatEther(pending.totalRaw)} $TOWNS`,
+                title: 'Approve $TOWNS',
+                subtitle: `Approve ${formatEther(pending.totalRaw)} $TOWNS for airdrop`,
                 tx: {
                     chainId: '8453',
                     to: TOWNS_ADDRESS as `0x${string}`,
@@ -281,7 +249,7 @@ bot.onInteractionResponse(async (handler, event) => {
         )
         await handler.sendMessage(
             channelId,
-            'Sign the transaction to send $TOWNS to the bot. Once confirmed, I\'ll continue.',
+            'Sign the transaction to **approve** $TOWNS. Tokens stay in your wallet until distribution.',
             { mentions: [{ userId, displayName: 'Creator' }] },
         )
         return
@@ -320,9 +288,15 @@ bot.onInteractionResponse(async (handler, event) => {
         const mode = pending.mode
         pendingDrops.delete(userId as `0x${string}`)
 
-        if (mode === 'fixed' && pending.memberAddresses && pending.memberAddresses.length > 0) {
+        if (mode === 'fixed' && pending.memberAddresses && pending.memberAddresses.length > 0 && pending.creatorWallet) {
             try {
-                await distribute(bot as AnyBot, pending.memberAddresses, pending.totalRaw, 'fixed')
+                await distributeFromCreator(
+                    bot as AnyBot,
+                    pending.creatorWallet,
+                    pending.memberAddresses,
+                    pending.totalRaw,
+                    'fixed',
+                )
             } catch (e) {
                 await handler.sendMessage(
                     channelId,
@@ -333,7 +307,7 @@ bot.onInteractionResponse(async (handler, event) => {
             const per = pending.totalRaw / BigInt(pending.memberAddresses.length)
             await handler.sendMessage(
                 channelId,
-                `Airdrop done. **${pending.memberAddresses.length}** members received **${formatEther(per)} $TOWNS** each.`,
+                `Airdrop done. **${pending.memberAddresses.length}** members received **${formatEther(per)} $TOWNS** each from your wallet.`,
             )
             return
         }

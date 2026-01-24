@@ -26,6 +26,7 @@ export type PendingDrop = {
     channelId: string
     spaceId: string | null
     creatorId: Address
+    creatorWallet?: Address
     memberAddresses?: Address[] // fixed mode: resolved smart accounts
 }
 
@@ -85,12 +86,12 @@ export async function resolveMemberAddresses(
 }
 
 /**
- * Distribute TOWNS from bot.appAddress to recipients.
- * - Fixed: each gets equal share (total / n).
- * - Reaction: total split evenly across recipients.
+ * Distribute TOWNS from creator's wallet to recipients via transferFrom.
+ * Creator must have approved bot.appAddress for totalRaw.
  */
-export async function distribute(
+export async function distributeFromCreator(
     bot: AnyBot,
+    creatorWallet: Address,
     recipients: Address[],
     totalRaw: bigint,
     _mode: AirdropMode
@@ -100,8 +101,8 @@ export async function distribute(
     const calls = recipients.map((to) => ({
         to: TOWNS_ADDRESS as Address,
         abi: erc20Abi,
-        functionName: 'transfer' as const,
-        args: [to, amountPer] as [Address, bigint],
+        functionName: 'transferFrom' as const,
+        args: [creatorWallet, to, amountPer] as [Address, Address, bigint],
     }))
     const hash = await execute(bot.viem, {
         address: bot.appAddress,
@@ -112,42 +113,17 @@ export async function distribute(
 }
 
 /**
- * Encode ERC20 transfer(data) for frontend tx: from user to bot.
+ * Encode ERC20 approve(spender, amount) for creator to approve bot.
  */
-export function encodeTransferToBot(
-    botAppAddress: Address,
+export function encodeApprove(
+    spender: Address,
     amountRaw: bigint
 ): `0x${string}` {
     return encodeFunctionData({
         abi: erc20Abi,
-        functionName: 'transfer',
-        args: [botAppAddress, amountRaw],
+        functionName: 'approve',
+        args: [spender, amountRaw],
     })
-}
-
-/**
- * Refund TOWNS from bot to creator (e.g. when reaction airdrop has no reactors).
- */
-export async function refundCreator(
-    bot: AnyBot,
-    creatorId: Address,
-    amountRaw: bigint
-): Promise<void> {
-    const addr = await getSmartAccountFromUserId(bot as Bot<BotCommand[]>, { userId: creatorId })
-    if (!addr) throw new Error('Creator has no linked wallet')
-    const hash = await execute(bot.viem, {
-        address: bot.appAddress,
-        account: bot.viem.account,
-        calls: [
-            {
-                to: TOWNS_ADDRESS as Address,
-                abi: erc20Abi,
-                functionName: 'transfer',
-                args: [addr, amountRaw],
-            },
-        ],
-    })
-    await waitForTransactionReceipt(bot.viem, { hash })
 }
 
 export { parseEther, formatEther }

@@ -8,10 +8,6 @@ const commands = [
         description: 'Get help with bot commands',
     },
     {
-        name: 'time',
-        description: 'Get the current time',
-    },
-    {
         name: 'drop',
         description:
             'Create airdrop: /drop fixed <amount> or /drop reaction <total>. TOWNS only.',
