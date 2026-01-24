@@ -40,6 +40,16 @@ function filterOutBotRecipients(addrs: Address[]): Address[] {
     })
 }
 
+function filterOutBotAndCreator(userIds: string[], creatorId: string): string[] {
+    const creator = creatorId.toLowerCase()
+    const botAddr = (bot.appAddress ?? '').toLowerCase()
+    const botId = (bot.botId ?? '').toLowerCase()
+    return userIds.filter((uid) => {
+        const w = uid.toLowerCase()
+        return w !== creator && w !== botAddr && w !== botId
+    })
+}
+
 async function findFirstFailingTransfer(
     creator: Address,
     recipients: Address[],
@@ -65,13 +75,13 @@ async function findFirstFailingTransfer(
     if (balance < totalNeeded) {
         return {
             to: recipients[0]!,
-            reason: `Insufficient balance: have ${formatEther(balance)}, need ${formatEther(totalNeeded)} $TOWNS`,
+            reason: `Insufficient balance at ${creator.slice(0, 10)}...: have ${formatEther(balance)}, need ${formatEther(totalNeeded)} $TOWNS. Ensure tokens are in the wallet you approved from.`,
         }
     }
     if (allowance < totalNeeded) {
         return {
             to: recipients[0]!,
-            reason: `Insufficient allowance: approved ${formatEther(allowance)}, need ${formatEther(totalNeeded)} $TOWNS. Re-approve.`,
+            reason: `Insufficient allowance at ${creator.slice(0, 10)}...: approved ${formatEther(allowance)}, need ${formatEther(totalNeeded)} $TOWNS. Re-approve from the same wallet.`,
         }
     }
 
@@ -136,7 +146,15 @@ bot.onSlashCommand('drop', async (handler, event) => {
 
     if (!isReact) {
         const userIds = await getChannelMemberIds(bot as AnyBot, channelId)
-        let memberAddresses = await resolveMemberAddresses(bot as AnyBot, userIds)
+        const filteredUserIds = filterOutBotAndCreator(userIds, userId)
+        if (filteredUserIds.length === 0) {
+            await handler.sendMessage(
+                channelId,
+                'No channel members found (or only bot/creator). Try a channel others have joined.',
+            )
+            return
+        }
+        let memberAddresses = await resolveMemberAddresses(bot as AnyBot, filteredUserIds)
         memberAddresses = filterOutBotRecipients(memberAddresses)
         if (memberAddresses.length === 0) {
             await handler.sendMessage(
@@ -232,6 +250,16 @@ bot.onReaction(async (handler, event) => {
         return
     }
     if (isLaunchReaction(reaction) && airdrop && airdrop.creatorId.toLowerCase() === userId.toLowerCase()) {
+        // Check if already in progress
+        const existing = pendingCloseDistributes.get(userId as `0x${string}`)
+        if (existing && existing.messageId === airdrop.airdropMessageId) {
+            await handler.sendMessage(
+                channelId,
+                'Airdrop distribution already in progress. Wait for current batch to complete.',
+                { threadId: airdrop.threadId, mentions: [{ userId: airdrop.creatorId, displayName: 'Creator' }] },
+            )
+            return
+        }
         const threadId = airdrop.threadId
         const reactors = Array.from(airdrop.reactorIds)
         if (reactors.length === 0) {
@@ -251,9 +279,26 @@ bot.onReaction(async (handler, event) => {
             })
             return
         }
-        const creatorWallet = airdrop.creatorId as `0x${string}`
+        // Validate: recipient count should match reactor count (after filtering)
+        if (recipientAddresses.length !== reactors.length) {
+            await handler.sendMessage(
+                channelId,
+                `Warning: ${reactors.length} reactors but only ${recipientAddresses.length} valid addresses. Some reactors may not have linked wallets.`,
+                { threadId, mentions: [{ userId: airdrop.creatorId, displayName: 'Creator' }] },
+            )
+        }
+        // Resolve creator's wallet (smart account if available, else userId)
+        const creatorResolved = await resolveMemberAddresses(bot as AnyBot, [airdrop.creatorId])
+        const creatorWallet = (creatorResolved[0] ?? airdrop.creatorId) as `0x${string}`
         const amountPer = airdrop.totalRaw / BigInt(recipientAddresses.length)
         const batches = chunkRecipients(recipientAddresses)
+        // Log recipient addresses for debugging (first 3 only)
+        const addrPreview = recipientAddresses.slice(0, 3).map(a => a.slice(0, 10) + '...').join(', ')
+        await handler.sendMessage(
+            channelId,
+            `Distributing to **${recipientAddresses.length}** recipients (${recipientAddresses.length > 3 ? addrPreview + '...' : addrPreview}).`,
+            { threadId, mentions: [{ userId: airdrop.creatorId, displayName: 'Creator' }] },
+        )
         pendingCloseDistributes.set(userId as `0x${string}`, {
             recipients: recipientAddresses,
             amountPer,
@@ -318,7 +363,9 @@ bot.onInteractionResponse(async (handler, event) => {
             }
         }
         if (!confirmed) return
-        const creatorWallet = userId as `0x${string}`
+        // Resolve creator's wallet (smart account if available, else userId)
+        const creatorResolved = await resolveMemberAddresses(bot as AnyBot, [userId])
+        const creatorWallet = (creatorResolved[0] ?? userId) as `0x${string}`
 
         const { eventId: threadRootId } = await handler.sendMessage(
             channelId,
