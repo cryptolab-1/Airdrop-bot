@@ -40,6 +40,8 @@ export type PendingDrop = {
     batches?: Address[][]
     batchIndex?: number
     amountPer?: bigint
+    /** Thread to post follow-ups in (avoid channel spam). */
+    threadId?: string
 }
 
 export type ReactionAirdrop = {
@@ -51,6 +53,8 @@ export type ReactionAirdrop = {
     airdropMessageId: string
     /** Follow-up message eventId; reactions on either message count. */
     followUpMessageId: string
+    /** Thread root; all airdrop msgs live in this thread. */
+    threadId: string
 }
 
 export type PendingCloseDistribute = {
@@ -64,16 +68,19 @@ export type PendingCloseDistribute = {
     /** Batches of recipients for multicall; one tx per batch. batchIndex -1 = awaiting approve. */
     batches: Address[][]
     batchIndex: number
+    /** Thread to post close follow-ups in. */
+    threadId: string
 }
 
 export const pendingDrops = new Map<Address, PendingDrop>()
 export const reactionAirdrops = new Map<string, ReactionAirdrop>()
 export const pendingCloseDistributes = new Map<Address, PendingCloseDistribute>()
 
-/** Remove airdrop from map (indexed by both airdrop and follow-up message ids). */
+/** Remove airdrop from map (indexed by airdrop, follow-up, and thread root ids). */
 export function deleteReactionAirdrop(airdrop: ReactionAirdrop): void {
     reactionAirdrops.delete(airdrop.airdropMessageId)
     reactionAirdrops.delete(airdrop.followUpMessageId)
+    reactionAirdrops.delete(airdrop.threadId)
 }
 
 export function joinEmoji(): string {
