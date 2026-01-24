@@ -360,6 +360,7 @@ bot.onInteractionResponse(async (handler, event) => {
         pending.amountPer = amountPer
         pending.batchIndex = -1
         pending.threadId = threadId
+        const addrCount = memberAddrs.length
         const data = encodeApprove(MULTICALL3_ADDRESS, pending.totalRaw)
         await handler.sendInteractionRequest(
             channelId,
@@ -380,14 +381,14 @@ bot.onInteractionResponse(async (handler, event) => {
         )
         await handler.sendMessage(
             channelId,
-            `Sign **approve** tx, then 1 or more **batch** tx(s) (up to ${MAX_TRANSFERS_PER_BATCH} per tx).`,
+            `Sign **approve** tx, then 1 or more **batch** tx(s) (up to ${MAX_TRANSFERS_PER_BATCH} per tx). Distributing to **${addrCount}** members.`,
             { threadId, mentions: [{ userId, displayName: 'Creator' }] },
         )
         return
     }
 
     if (pl?.case === 'transaction') {
-        const tx = pl.value as { requestId: string; txHash?: string; error?: string }
+        const tx = pl.value as { requestId?: string; id?: string; txHash?: string; error?: string }
         const uid = userId as `0x${string}`
 
         const closeDist = pendingCloseDistributes.get(uid)
@@ -402,7 +403,10 @@ bot.onInteractionResponse(async (handler, event) => {
                 )
                 return
             }
-            if (!tx.txHash) return
+            if (!tx.txHash) {
+                // Transaction submitted but hash not yet available - wait for next response with hash
+                return
+            }
             let receipt: { status: string }
             try {
                 receipt = await waitForTransactionReceipt(bot.viem, { hash: tx.txHash as `0x${string}` })
@@ -497,6 +501,15 @@ bot.onInteractionResponse(async (handler, event) => {
         const pending = pendingDrops.get(uid)
         if (!pending) return
         const threadId = pending.threadId
+        
+        // Check if this is an approve transaction (batchIndex === -1 means awaiting approve)
+        const isApproveTx = pending.batchIndex === -1
+        const txId = tx.requestId ?? tx.id ?? ''
+        if (isApproveTx && txId && !txId.startsWith('drop-fixed-approve-')) {
+            // Not our approve transaction, ignore
+            return
+        }
+        
         if (tx.error) {
             pendingDrops.delete(uid)
             await handler.sendMessage(
@@ -506,7 +519,11 @@ bot.onInteractionResponse(async (handler, event) => {
             )
             return
         }
-        if (!tx.txHash) return
+        if (!tx.txHash) {
+            // Transaction submitted but hash not yet available - the handler will be called again with the hash
+            // Don't return early - wait for the next call with txHash
+            return
+        }
         let receipt: { status: string }
         try {
             receipt = await waitForTransactionReceipt(bot.viem, { hash: tx.txHash as `0x${string}` })
