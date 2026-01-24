@@ -17,6 +17,7 @@ import {
     resolveMemberAddresses,
     encodeApprove,
     encodeAggregate3,
+    encodeTransferFrom,
     chunkRecipients,
     deleteReactionAirdrop,
     findReactionAirdrop,
@@ -27,6 +28,36 @@ import {
 const bot = await makeTownsBot(process.env.APP_PRIVATE_DATA!, process.env.JWT_SECRET!, {
     commands,
 })
+
+function filterOutBotRecipients(addrs: Address[]): Address[] {
+    const a = (bot.appAddress ?? '').toLowerCase()
+    const b = (bot.botId ?? '').toLowerCase()
+    if (!a && !b) return addrs
+    return addrs.filter((x) => {
+        const w = x.toLowerCase()
+        return w !== a && w !== b
+    })
+}
+
+async function findFirstFailingTransfer(
+    creator: Address,
+    recipients: Address[],
+    amountPer: bigint
+): Promise<{ to: Address; reason: string } | null> {
+    for (const to of recipients) {
+        try {
+            await call(bot.viem, {
+                to: TOWNS_ADDRESS as Address,
+                data: encodeTransferFrom(creator, to, amountPer),
+                account: MULTICALL3_ADDRESS as Address,
+            })
+        } catch (e) {
+            const reason = e instanceof Error ? e.message : String(e)
+            return { to, reason }
+        }
+    }
+    return null
+}
 
 bot.onSlashCommand('help', async (handler, { channelId }) => {
     await handler.sendMessage(
@@ -66,11 +97,12 @@ bot.onSlashCommand('drop', async (handler, event) => {
 
     if (!isReact) {
         const userIds = await getChannelMemberIds(bot as AnyBot, channelId)
-        const memberAddresses = await resolveMemberAddresses(bot as AnyBot, userIds)
+        let memberAddresses = await resolveMemberAddresses(bot as AnyBot, userIds)
+        memberAddresses = filterOutBotRecipients(memberAddresses)
         if (memberAddresses.length === 0) {
             await handler.sendMessage(
                 channelId,
-                'No channel members with linked wallets found. Try a channel others have joined.',
+                'No channel members found (or only bot). Try a channel others have joined.',
             )
             return
         }
@@ -172,9 +204,10 @@ bot.onReaction(async (handler, event) => {
             )
             return
         }
-        const recipientAddresses = await resolveMemberAddresses(bot as AnyBot, reactors)
+        let recipientAddresses = await resolveMemberAddresses(bot as AnyBot, reactors)
+        recipientAddresses = filterOutBotRecipients(recipientAddresses)
         if (recipientAddresses.length === 0) {
-            await handler.sendMessage(channelId, 'No reactors have linked wallets; cannot distribute.', {
+            await handler.sendMessage(channelId, 'No reactors to distribute to (or only bot).', {
                 threadId,
             })
             return
@@ -380,10 +413,17 @@ bot.onInteractionResponse(async (handler, event) => {
                     account: closeDist.creatorWallet as Address,
                 })
             } catch (simErr) {
-                const msg = simErr instanceof Error ? simErr.message : String(simErr)
+                const fail = await findFirstFailingTransfer(
+                    closeDist.creatorWallet,
+                    batch,
+                    closeDist.amountPer
+                )
+                const detail = fail
+                    ? `First failing transfer to \`${fail.to.slice(0, 10)}...\`: ${fail.reason}`
+                    : (simErr instanceof Error ? simErr.message : String(simErr))
                 await handler.sendMessage(
                     channelId,
-                    `Batch ${closeDist.batchIndex + 1}/${closeDist.batches.length} would fail: **${msg}**. Check balance, allowance, and recipient wallets. React ${LAUNCH_EMOJI} to retry.`,
+                    `Batch ${closeDist.batchIndex + 1}/${closeDist.batches.length} would fail: **${detail}**. Check balance, allowance, and recipient wallets. React ${LAUNCH_EMOJI} to retry.`,
                     { threadId, mentions: [{ userId: closeDist.creatorId, displayName: 'Creator' }] },
                 )
                 return
@@ -478,10 +518,17 @@ bot.onInteractionResponse(async (handler, event) => {
             })
         } catch (simErr) {
             pendingDrops.delete(uid)
-            const msg = simErr instanceof Error ? simErr.message : String(simErr)
+            const fail = await findFirstFailingTransfer(
+                pending.creatorWallet!,
+                batch,
+                amountPer
+            )
+            const detail = fail
+                ? `First failing transfer to \`${fail.to.slice(0, 10)}...\`: ${fail.reason}`
+                : (simErr instanceof Error ? simErr.message : String(simErr))
             await handler.sendMessage(
                 channelId,
-                `Batch ${pending.batchIndex! + 1}/${batches.length} would fail: **${msg}**. Check balance, allowance, and recipient wallets.`,
+                `Batch ${pending.batchIndex! + 1}/${batches.length} would fail: **${detail}**. Check balance, allowance, and recipient wallets.`,
                 { threadId, mentions: [{ userId, displayName: 'Creator' }] },
             )
             return
