@@ -5,13 +5,13 @@ A simple, barebones bot example perfect for beginners learning to build Towns bo
 # Features
 
 - **Slash commands**: `/help`, `/drop`, `/drop_close`
-- **$TOWNS airdrops**: `/drop fixed` (all channel members) or `/drop reaction` (🤭 reactors)
+- **$TOWNS airdrops**: `/drop <amount>` (all channel members) or `/drop react <amount>` (🤭 reactors)
 
 ## Slash Commands
 
 - `/help` - Show available commands
-- `/drop fixed <amount>` - Airdrop each channel member a fixed amount of $TOWNS
-- `/drop reaction <total>` - Airdrop $TOWNS split among users who react 🤭; then `/drop_close <messageId>` to distribute
+- `/drop <amount>` - Airdrop each channel member that amount of $TOWNS
+- `/drop react <amount>` - Airdrop $TOWNS split among users who react 🤭; react ❌ to cancel; `/drop_close <messageId>` to distribute
 - `/drop_close <messageId>` - Close a reaction airdrop and send $TOWNS to reactors
 
 # Setup
@@ -48,8 +48,8 @@ Once the bot is running, installed to a space and added to a channel:
 **Try the slash commands:**
 
 - `/help` - See all available commands
-- `/drop fixed <amount>` or `/drop reaction <total>` - Create an airdrop
-- `/drop_close <messageId>` - Close a reaction airdrop and distribute
+- `/drop <amount>` or `/drop react <amount>` - Create an airdrop
+- Reaction airdrops: react 🤭 to join, react ❌ (creator only) to cancel, `/drop_close <messageId>` to distribute
 
 # Code Structure
 

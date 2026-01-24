@@ -25,8 +25,8 @@ bot.onSlashCommand('help', async (handler, { channelId }) => {
         channelId,
         '**Available Commands:**\n\n' +
             '• `/help` - Show this help message\n' +
-            '• `/drop fixed <amount>` - Airdrop each channel member a fixed amount of $TOWNS\n' +
-            '• `/drop reaction <total>` - Airdrop $TOWNS split among users who react 🤭\n' +
+            '• `/drop <amount>` - Airdrop each channel member that amount of $TOWNS\n' +
+            '• `/drop react <amount>` - Airdrop $TOWNS split among users who react 🤭; react ❌ to cancel\n' +
             '• `/drop_close <messageId>` - Close a reaction airdrop and distribute',
     )
 })
@@ -37,18 +37,19 @@ bot.onSlashCommand('drop', async (handler, event) => {
         await handler.sendMessage(channelId, 'Use `/drop` in a space channel.')
         return
     }
-    const mode = args[0]?.toLowerCase()
-    const amountStr = args[1]
-    if (mode !== 'fixed' && mode !== 'reaction') {
+    const first = args[0]?.toLowerCase()
+    const isReact = first === 'react'
+    const amountStr = isReact ? args[1] : args[0]
+    if (!amountStr) {
         await handler.sendMessage(
             channelId,
-            'Usage: `/drop fixed <amount>` or `/drop reaction <total>`. Amounts in $TOWNS.',
+            'Usage: `/drop <amount>` or `/drop react <amount>`. Amounts in $TOWNS.',
         )
         return
     }
     let amount: number
     try {
-        amount = parseFloat(amountStr ?? '')
+        amount = parseFloat(amountStr)
         if (!Number.isFinite(amount) || amount <= 0) throw new Error('invalid')
     } catch {
         await handler.sendMessage(channelId, 'Provide a valid positive amount (e.g. `10` or `1.5`).')
@@ -56,7 +57,7 @@ bot.onSlashCommand('drop', async (handler, event) => {
     }
     const totalRaw = parseEther(amount.toString())
 
-    if (mode === 'fixed') {
+    if (!isReact) {
         const userIds = await getChannelMemberIds(bot as AnyBot, channelId)
         const memberAddresses = await resolveMemberAddresses(bot as AnyBot, userIds)
         if (memberAddresses.length === 0) {
@@ -99,7 +100,7 @@ bot.onSlashCommand('drop', async (handler, event) => {
         return
     }
 
-    // reaction
+    // react mode
     pendingDrops.set(userId as `0x${string}`, {
         mode: 'reaction',
         totalRaw,
@@ -187,7 +188,21 @@ bot.onSlashCommand('drop_close', async (handler, event) => {
     )
 })
 
+const CANCEL_EMOJI = '❌'
+
 bot.onReaction(async (handler, { reaction, channelId, messageId, userId }) => {
+    if (reaction === CANCEL_EMOJI) {
+        const airdrop = reactionAirdrops.get(messageId)
+        if (airdrop && airdrop.creatorId.toLowerCase() === userId.toLowerCase()) {
+            reactionAirdrops.delete(messageId)
+            await handler.sendMessage(
+                channelId,
+                'Airdrop cancelled by creator. Tokens remain in your wallet (approval unused).',
+                { mentions: [{ userId: airdrop.creatorId, displayName: 'Creator' }] },
+            )
+            return
+        }
+    }
     if (isMoneyMouth(reaction)) {
         const airdrop = reactionAirdrops.get(messageId)
         if (airdrop) airdrop.reactorIds.add(userId)
@@ -315,7 +330,7 @@ bot.onInteractionResponse(async (handler, event) => {
         if (mode === 'reaction') {
             const { eventId: msgEventId } = await handler.sendMessage(
                 channelId,
-                `**$TOWNS Airdrop** · React ${moneyMouthEmoji()} to join. Total: **${formatEther(pending.totalRaw)} $TOWNS**. Creator: <@${pending.creatorId}>.`,
+                `**$TOWNS Airdrop** · React ${moneyMouthEmoji()} to join. Total: **${formatEther(pending.totalRaw)} $TOWNS**. Creator: <@${pending.creatorId}>. React ${CANCEL_EMOJI} to cancel.`,
                 { mentions: [{ userId: pending.creatorId, displayName: 'Creator' }] },
             )
             reactionAirdrops.set(msgEventId, {
@@ -324,9 +339,10 @@ bot.onInteractionResponse(async (handler, event) => {
                 channelId: pending.channelId,
                 reactorIds: new Set(),
             })
+            await handler.sendReaction(channelId, msgEventId, CANCEL_EMOJI)
             await handler.sendMessage(
                 channelId,
-                `Airdrop live. Message ID: \`${msgEventId}\`. React ${moneyMouthEmoji()} to join, then \`/drop_close ${msgEventId}\` to distribute.`,
+                `Airdrop live. Message ID: \`${msgEventId}\`. React ${moneyMouthEmoji()} to join · React ${CANCEL_EMOJI} to cancel · \`/drop_close ${msgEventId}\` to distribute.`,
                 { mentions: [{ userId: pending.creatorId, displayName: 'Creator' }] },
             )
         }

@@ -10,7 +10,7 @@ const commands = [
     {
         name: 'drop',
         description:
-            'Create airdrop: /drop fixed <amount> or /drop reaction <total>. TOWNS only.',
+            'Create airdrop: /drop <amount> or /drop react <amount>. TOWNS only.',
     },
     {
         name: 'drop_close',
