@@ -1,6 +1,7 @@
 import { makeTownsBot } from '@towns-protocol/bot'
-import { call, waitForTransactionReceipt } from 'viem/actions'
+import { call, readContract, waitForTransactionReceipt } from 'viem/actions'
 import type { Address } from 'viem'
+import { erc20Abi } from 'viem'
 import commands from './commands'
 import {
     TOWNS_ADDRESS,
@@ -42,8 +43,39 @@ function filterOutBotRecipients(addrs: Address[]): Address[] {
 async function findFirstFailingTransfer(
     creator: Address,
     recipients: Address[],
-    amountPer: bigint
+    amountPer: bigint,
+    totalNeeded: bigint
 ): Promise<{ to: Address; reason: string } | null> {
+    // Check balance and allowance first
+    const [balance, allowance] = await Promise.all([
+        readContract(bot.viem, {
+            address: TOWNS_ADDRESS as Address,
+            abi: erc20Abi,
+            functionName: 'balanceOf',
+            args: [creator],
+        }),
+        readContract(bot.viem, {
+            address: TOWNS_ADDRESS as Address,
+            abi: erc20Abi,
+            functionName: 'allowance',
+            args: [creator, MULTICALL3_ADDRESS as Address],
+        }),
+    ])
+
+    if (balance < totalNeeded) {
+        return {
+            to: recipients[0]!,
+            reason: `Insufficient balance: have ${formatEther(balance)}, need ${formatEther(totalNeeded)} $TOWNS`,
+        }
+    }
+    if (allowance < totalNeeded) {
+        return {
+            to: recipients[0]!,
+            reason: `Insufficient allowance: approved ${formatEther(allowance)}, need ${formatEther(totalNeeded)} $TOWNS. Re-approve.`,
+        }
+    }
+
+    // Check each transfer
     for (const to of recipients) {
         try {
             await call(bot.viem, {
@@ -53,6 +85,13 @@ async function findFirstFailingTransfer(
             })
         } catch (e) {
             const reason = e instanceof Error ? e.message : String(e)
+            // If it's a generic revert, try to provide more context
+            if (reason.includes('unknown reason') || reason.includes('Execution reverted')) {
+                return {
+                    to,
+                    reason: `Transfer failed (likely insufficient balance/allowance or recipient issue). Balance: ${formatEther(balance)}, Allowance: ${formatEther(allowance)}`,
+                }
+            }
             return { to, reason }
         }
     }
@@ -413,10 +452,12 @@ bot.onInteractionResponse(async (handler, event) => {
                     account: closeDist.creatorWallet as Address,
                 })
             } catch (simErr) {
+                const totalNeeded = closeDist.amountPer * BigInt(batch.length)
                 const fail = await findFirstFailingTransfer(
                     closeDist.creatorWallet,
                     batch,
-                    closeDist.amountPer
+                    closeDist.amountPer,
+                    totalNeeded
                 )
                 const detail = fail
                     ? `First failing transfer to \`${fail.to.slice(0, 10)}...\`: ${fail.reason}`
@@ -518,10 +559,12 @@ bot.onInteractionResponse(async (handler, event) => {
             })
         } catch (simErr) {
             pendingDrops.delete(uid)
+            const totalNeeded = amountPer * BigInt(batch.length)
             const fail = await findFirstFailingTransfer(
                 pending.creatorWallet!,
                 batch,
-                amountPer
+                amountPer,
+                totalNeeded
             )
             const detail = fail
                 ? `First failing transfer to \`${fail.to.slice(0, 10)}...\`: ${fail.reason}`
