@@ -1,5 +1,6 @@
 import { makeTownsBot } from '@towns-protocol/bot'
-import { waitForTransactionReceipt } from 'viem/actions'
+import { call, waitForTransactionReceipt } from 'viem/actions'
+import type { Address } from 'viem'
 import commands from './commands'
 import {
     TOWNS_ADDRESS,
@@ -33,8 +34,7 @@ bot.onSlashCommand('help', async (handler, { channelId }) => {
         '**Available Commands:**\n\n' +
             '• `/help` - Show this help message\n\n' +
             '• `/drop <amount>` - Airdrop each channel member that amount of $TOWNS\n\n' +
-            '• `/drop react <amount>` - Airdrop $TOWNS split among users who react 💸; react ❌ to cancel\n\n' +
-            '• `/drop_close <messageId>` - Close a reaction airdrop and distribute',
+            '• `/drop react <amount>` - Airdrop $TOWNS split among users who react 💸 to join; creator reacts ❌ to cancel, 🚀 to launch',
     )
 })
 
@@ -131,90 +131,24 @@ bot.onSlashCommand('drop', async (handler, event) => {
     )
     await handler.sendMessage(
         channelId,
-        `I'll post an airdrop message; users who react ${joinEmoji()} will share **${formatEther(totalRaw)} $TOWNS**. You'll approve + sign batch tx(s) when you close. Confirm above.`,
+        `I'll post an airdrop message; users who react ${joinEmoji()} will share **${formatEther(totalRaw)} $TOWNS**. You react 🚀 to launch, ❌ to cancel. Confirm above.`,
         { mentions: [{ userId, displayName: 'Creator' }] },
     )
 })
 
-bot.onSlashCommand('drop_close', async (handler, event) => {
-    const { channelId, userId, args, isDm } = event
-    const messageId = args[0]?.trim()
-    if (!messageId) {
-        await handler.sendMessage(channelId, 'Usage: `/drop_close <messageId>`. Use the airdrop message ID.')
-        return
-    }
-    const airdrop = findReactionAirdrop(messageId)
-    if (!airdrop) {
-        await handler.sendMessage(channelId, 'No reaction airdrop found for that message.')
-        return
-    }
-    if (airdrop.creatorId.toLowerCase() !== userId.toLowerCase()) {
-        await handler.sendMessage(channelId, 'Only the airdrop creator can close it.')
-        return
-    }
-    const reactors = Array.from(airdrop.reactorIds)
-    const threadId = airdrop.threadId
-    if (reactors.length === 0) {
-        deleteReactionAirdrop(airdrop)
-        await handler.sendMessage(
-            channelId,
-            'No one reacted. Airdrop cancelled. Tokens remain in your wallet.',
-            { threadId, mentions: [{ userId: airdrop.creatorId, displayName: 'Creator' }] },
-        )
-        return
-    }
-    const recipientAddresses = await resolveMemberAddresses(bot as AnyBot, reactors)
-    if (recipientAddresses.length === 0) {
-        await handler.sendMessage(channelId, 'No reactors have linked wallets; cannot distribute.', {
-            threadId,
-        })
-        return
-    }
-    const creatorWallet = airdrop.creatorId as `0x${string}`
-    const amountPer = airdrop.totalRaw / BigInt(recipientAddresses.length)
-    const batches = chunkRecipients(recipientAddresses)
-    pendingCloseDistributes.set(userId as `0x${string}`, {
-        recipients: recipientAddresses,
-        amountPer,
-        channelId,
-        messageId,
-        followUpMessageId: airdrop.followUpMessageId,
-        creatorId: airdrop.creatorId,
-        creatorWallet,
-        batches,
-        batchIndex: -1,
-        threadId,
-    })
-    const data = encodeApprove(MULTICALL3_ADDRESS, airdrop.totalRaw)
-    await handler.sendInteractionRequest(
-        channelId,
-        {
-            type: 'transaction',
-            id: `drop-close-approve-${Date.now()}`,
-            title: 'Approve $TOWNS',
-            subtitle: `Approve ${formatEther(airdrop.totalRaw)} $TOWNS for batched distribute`,
-            tx: {
-                chainId: '8453',
-                to: TOWNS_ADDRESS as `0x${string}`,
-                value: '0',
-                data,
-            },
-            recipient: userId as `0x${string}`,
-        },
-        { threadId, replyId: event.eventId },
-    )
-    await handler.sendMessage(
-        channelId,
-        `Sign **approve** tx, then **${batches.length}** batch tx(s) (up to ${MAX_TRANSFERS_PER_BATCH} per tx).`,
-        { threadId, mentions: [{ userId: airdrop.creatorId, displayName: 'Creator' }] },
-    )
-})
-
 const CANCEL_EMOJI = '❌'
+const LAUNCH_EMOJI = '🚀'
 
-bot.onReaction(async (handler, { reaction, channelId, messageId, userId }) => {
-        if (reaction === CANCEL_EMOJI) {
-        const airdrop = findReactionAirdrop(messageId)
+function isLaunchReaction(r: string): boolean {
+    if (r === LAUNCH_EMOJI) return true
+    const n = (x: string) => x.toLowerCase().replace(/[^a-z0-9]/g, '')
+    return ['rocket', 'launch'].some((s) => n(r) === n(s))
+}
+
+bot.onReaction(async (handler, event) => {
+    const { reaction, channelId, messageId, userId } = event
+    const airdrop = findReactionAirdrop(messageId)
+    if (reaction === CANCEL_EMOJI) {
         if (airdrop && airdrop.creatorId.toLowerCase() === userId.toLowerCase()) {
             deleteReactionAirdrop(airdrop)
             await handler.sendMessage(
@@ -222,12 +156,69 @@ bot.onReaction(async (handler, { reaction, channelId, messageId, userId }) => {
                 'Airdrop cancelled by creator. Tokens remain in your wallet.',
                 { threadId: airdrop.threadId, mentions: [{ userId: airdrop.creatorId, displayName: 'Creator' }] },
             )
+        }
+        return
+    }
+    if (isLaunchReaction(reaction) && airdrop && airdrop.creatorId.toLowerCase() === userId.toLowerCase()) {
+        const threadId = airdrop.threadId
+        const reactors = Array.from(airdrop.reactorIds)
+        if (reactors.length === 0) {
+            deleteReactionAirdrop(airdrop)
+            await handler.sendMessage(
+                channelId,
+                'No one reacted. Airdrop cancelled. Tokens remain in your wallet.',
+                { threadId, mentions: [{ userId: airdrop.creatorId, displayName: 'Creator' }] },
+            )
             return
         }
+        const recipientAddresses = await resolveMemberAddresses(bot as AnyBot, reactors)
+        if (recipientAddresses.length === 0) {
+            await handler.sendMessage(channelId, 'No reactors have linked wallets; cannot distribute.', {
+                threadId,
+            })
+            return
+        }
+        const creatorWallet = airdrop.creatorId as `0x${string}`
+        const amountPer = airdrop.totalRaw / BigInt(recipientAddresses.length)
+        const batches = chunkRecipients(recipientAddresses)
+        pendingCloseDistributes.set(userId as `0x${string}`, {
+            recipients: recipientAddresses,
+            amountPer,
+            channelId,
+            messageId: airdrop.airdropMessageId,
+            creatorId: airdrop.creatorId,
+            creatorWallet,
+            batches,
+            batchIndex: -1,
+            threadId,
+        })
+        const data = encodeApprove(MULTICALL3_ADDRESS, airdrop.totalRaw)
+        await handler.sendInteractionRequest(
+            channelId,
+            {
+                type: 'transaction',
+                id: `drop-launch-approve-${Date.now()}`,
+                title: 'Approve $TOWNS',
+                subtitle: `Approve ${formatEther(airdrop.totalRaw)} $TOWNS for batched distribute`,
+                tx: {
+                    chainId: '8453',
+                    to: TOWNS_ADDRESS as `0x${string}`,
+                    value: '0',
+                    data,
+                },
+                recipient: userId as `0x${string}`,
+            },
+            { threadId, replyId: event.eventId },
+        )
+        await handler.sendMessage(
+            channelId,
+            `Sign **approve** tx, then **${batches.length}** batch tx(s) (up to ${MAX_TRANSFERS_PER_BATCH} per tx).`,
+            { threadId, mentions: [{ userId: airdrop.creatorId, displayName: 'Creator' }] },
+        )
+        return
     }
-    if (isJoinReaction(reaction)) {
-        const airdrop = findReactionAirdrop(messageId)
-        if (airdrop) airdrop.reactorIds.add(userId)
+    if (isJoinReaction(reaction) && airdrop) {
+        airdrop.reactorIds.add(userId)
     }
 })
 
@@ -267,12 +258,7 @@ bot.onInteractionResponse(async (handler, event) => {
             pendingDrops.delete(userId as `0x${string}`)
             const { eventId: msgEventId } = await handler.sendMessage(
                 channelId,
-                `**$TOWNS Airdrop** · React ${joinEmoji()} to join. Total: **${formatEther(pending.totalRaw)} $TOWNS**. Creator: <@${pending.creatorId}>. React ${CANCEL_EMOJI} to cancel.`,
-                { threadId, mentions: [{ userId: pending.creatorId, displayName: 'Creator' }] },
-            )
-            const { eventId: followUpId } = await handler.sendMessage(
-                channelId,
-                `Airdrop live. Message ID: \`${msgEventId}\`. React ${joinEmoji()} to join · React ${CANCEL_EMOJI} to cancel · \`/drop_close ${msgEventId}\` to distribute.`,
+                `**$TOWNS Airdrop** · React ${joinEmoji()} to join. Total: **${formatEther(pending.totalRaw)} $TOWNS**. Creator: <@${pending.creatorId}>. React ${CANCEL_EMOJI} to cancel · ${LAUNCH_EMOJI} to launch.`,
                 { threadId, mentions: [{ userId: pending.creatorId, displayName: 'Creator' }] },
             )
             const airdrop: ReactionAirdrop = {
@@ -281,18 +267,16 @@ bot.onInteractionResponse(async (handler, event) => {
                 channelId: pending.channelId,
                 reactorIds: new Set(),
                 airdropMessageId: msgEventId,
-                followUpMessageId: followUpId,
                 threadId,
             }
             reactionAirdrops.set(msgEventId, airdrop)
-            reactionAirdrops.set(followUpId, airdrop)
             reactionAirdrops.set(threadId, airdrop)
             await handler.sendReaction(channelId, threadId, joinEmoji())
             await handler.sendReaction(channelId, threadId, CANCEL_EMOJI)
+            await handler.sendReaction(channelId, threadId, LAUNCH_EMOJI)
             await handler.sendReaction(channelId, msgEventId, joinEmoji())
             await handler.sendReaction(channelId, msgEventId, CANCEL_EMOJI)
-            await handler.sendReaction(channelId, followUpId, joinEmoji())
-            await handler.sendReaction(channelId, followUpId, CANCEL_EMOJI)
+            await handler.sendReaction(channelId, msgEventId, LAUNCH_EMOJI)
             return
         }
 
@@ -340,7 +324,7 @@ bot.onInteractionResponse(async (handler, event) => {
                 pendingCloseDistributes.delete(uid)
                 await handler.sendMessage(
                     channelId,
-                    `Transaction rejected: ${tx.error}. Airdrop still open; you can \`/drop_close ${closeDist.messageId}\` again.`,
+                    `Transaction rejected: ${tx.error}. Airdrop still open; react ${LAUNCH_EMOJI} again to retry.`,
                     { threadId, mentions: [{ userId: closeDist.creatorId, displayName: 'Creator' }] },
                 )
                 return
@@ -351,18 +335,22 @@ bot.onInteractionResponse(async (handler, event) => {
                 receipt = await waitForTransactionReceipt(bot.viem, { hash: tx.txHash as `0x${string}` })
             } catch (e) {
                 pendingCloseDistributes.delete(uid)
+                const txLink = tx.txHash ? ` [View tx](https://basescan.org/tx/${tx.txHash})` : ''
                 await handler.sendMessage(
                     channelId,
-                    `Failed to verify tx: ${e instanceof Error ? e.message : String(e)}. You can \`/drop_close ${closeDist.messageId}\` again.`,
+                    `Failed to verify tx: ${e instanceof Error ? e.message : String(e)}.${txLink} React ${LAUNCH_EMOJI} again to retry.`,
                     { threadId, mentions: [{ userId: closeDist.creatorId, displayName: 'Creator' }] },
                 )
                 return
             }
             if (receipt.status !== 'success') {
                 pendingCloseDistributes.delete(uid)
-                await handler.sendMessage(channelId, 'Transaction failed on-chain. Airdrop not closed.', {
-                    threadId,
-                })
+                const txLink = `https://basescan.org/tx/${tx.txHash}`
+                await handler.sendMessage(
+                    channelId,
+                    `Transaction failed on-chain. Airdrop not closed. [View tx](${txLink})`,
+                    { threadId, mentions: [{ userId: closeDist.creatorId, displayName: 'Creator' }] },
+                )
                 return
             }
             const isApprove = closeDist.batchIndex === -1
@@ -374,7 +362,6 @@ bot.onInteractionResponse(async (handler, event) => {
             if (closeDist.batchIndex >= closeDist.batches.length) {
                 pendingCloseDistributes.delete(uid)
                 reactionAirdrops.delete(closeDist.messageId)
-                reactionAirdrops.delete(closeDist.followUpMessageId)
                 reactionAirdrops.delete(closeDist.threadId)
                 await handler.sendMessage(
                     channelId,
@@ -385,6 +372,21 @@ bot.onInteractionResponse(async (handler, event) => {
             }
             const batch = closeDist.batches[closeDist.batchIndex]!
             const data = encodeAggregate3(closeDist.creatorWallet, batch, closeDist.amountPer)
+            try {
+                await call(bot.viem, {
+                    to: MULTICALL3_ADDRESS as Address,
+                    data,
+                    account: closeDist.creatorWallet as Address,
+                })
+            } catch (simErr) {
+                const msg = simErr instanceof Error ? simErr.message : String(simErr)
+                await handler.sendMessage(
+                    channelId,
+                    `Batch ${closeDist.batchIndex + 1}/${closeDist.batches.length} would fail: **${msg}**. Check balance, allowance, and recipient wallets. React ${LAUNCH_EMOJI} to retry.`,
+                    { threadId, mentions: [{ userId: closeDist.creatorId, displayName: 'Creator' }] },
+                )
+                return
+            }
             await handler.sendInteractionRequest(
                 channelId,
                 {
@@ -428,16 +430,22 @@ bot.onInteractionResponse(async (handler, event) => {
             receipt = await waitForTransactionReceipt(bot.viem, { hash: tx.txHash as `0x${string}` })
         } catch (e) {
             pendingDrops.delete(uid)
+            const txLink = tx.txHash ? ` [View tx](https://basescan.org/tx/${tx.txHash})` : ''
             await handler.sendMessage(
                 channelId,
-                `Failed to verify transaction: ${e instanceof Error ? e.message : String(e)}`,
+                `Failed to verify transaction: ${e instanceof Error ? e.message : String(e)}.${txLink}`,
                 { threadId },
             )
             return
         }
         if (receipt.status !== 'success') {
             pendingDrops.delete(uid)
-            await handler.sendMessage(channelId, 'Transaction failed on-chain.', { threadId })
+            const txLink = `https://basescan.org/tx/${tx.txHash}`
+            await handler.sendMessage(
+                channelId,
+                `Transaction failed on-chain. [View tx](${txLink})`,
+                { threadId },
+            )
             return
         }
 
@@ -461,6 +469,22 @@ bot.onInteractionResponse(async (handler, event) => {
         }
         const batch = batches[pending.batchIndex!]!
         const data = encodeAggregate3(pending.creatorWallet!, batch, amountPer)
+        try {
+            await call(bot.viem, {
+                to: MULTICALL3_ADDRESS as Address,
+                data,
+                account: pending.creatorWallet! as Address,
+            })
+        } catch (simErr) {
+            pendingDrops.delete(uid)
+            const msg = simErr instanceof Error ? simErr.message : String(simErr)
+            await handler.sendMessage(
+                channelId,
+                `Batch ${pending.batchIndex! + 1}/${batches.length} would fail: **${msg}**. Check balance, allowance, and recipient wallets.`,
+                { threadId, mentions: [{ userId, displayName: 'Creator' }] },
+            )
+            return
+        }
         await handler.sendInteractionRequest(
             channelId,
             {

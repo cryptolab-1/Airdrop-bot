@@ -12,10 +12,6 @@ const commands = [
         description:
             'Create airdrop: /drop <amount> or /drop react <amount>. TOWNS only.',
     },
-    {
-        name: 'drop_close',
-        description: 'Close a reaction airdrop and distribute: /drop_close <messageId>',
-    },
 ] as const satisfies BotCommand[]
 
 export default commands

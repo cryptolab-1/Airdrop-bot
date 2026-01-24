@@ -58,10 +58,8 @@ export type ReactionAirdrop = {
     creatorId: Address
     channelId: string
     reactorIds: Set<string>
-    /** Airdrop message eventId (primary; used for /drop_close). */
+    /** Airdrop message eventId. */
     airdropMessageId: string
-    /** Follow-up message eventId; reactions on either message count. */
-    followUpMessageId: string
     /** Thread root; all airdrop msgs live in this thread. */
     threadId: string
 }
@@ -71,7 +69,6 @@ export type PendingCloseDistribute = {
     amountPer: bigint
     channelId: string
     messageId: string
-    followUpMessageId: string
     creatorId: Address
     creatorWallet: Address
     /** Batches of recipients for multicall; one tx per batch. batchIndex -1 = awaiting approve. */
@@ -85,16 +82,15 @@ export const pendingDrops = new Map<Address, PendingDrop>()
 export const reactionAirdrops = new Map<string, ReactionAirdrop>()
 export const pendingCloseDistributes = new Map<Address, PendingCloseDistribute>()
 
-/** Remove airdrop from map (indexed by airdrop, follow-up, and thread root ids). */
+/** Remove airdrop from map (indexed by airdrop message and thread root ids). */
 export function deleteReactionAirdrop(airdrop: ReactionAirdrop): void {
     reactionAirdrops.delete(airdrop.airdropMessageId)
-    reactionAirdrops.delete(airdrop.followUpMessageId)
     reactionAirdrops.delete(airdrop.threadId)
 }
 
 /**
  * Find airdrop by messageId. Tries direct lookup, then checks all airdrops'
- * airdropMessageId, followUpMessageId, threadId (handles format mismatches).
+ * airdropMessageId, threadId (handles format mismatches).
  */
 export function findReactionAirdrop(messageId: string): ReactionAirdrop | undefined {
     const direct = reactionAirdrops.get(messageId)
@@ -107,9 +103,8 @@ export function findReactionAirdrop(messageId: string): ReactionAirdrop | undefi
     for (const a of reactionAirdrops.values()) {
         if (
             a.airdropMessageId === messageId ||
-            a.followUpMessageId === messageId ||
             a.threadId === messageId ||
-            (trimmed && (a.airdropMessageId === trimmed || a.followUpMessageId === trimmed || a.threadId === trimmed))
+            (trimmed && (a.airdropMessageId === trimmed || a.threadId === trimmed))
         )
             return a
     }
