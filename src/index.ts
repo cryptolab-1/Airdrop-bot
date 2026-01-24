@@ -6,6 +6,7 @@ import {
     MULTICALL3_ADDRESS,
     MAX_TRANSFERS_PER_BATCH,
     type AnyBot,
+    type ReactionAirdrop,
     formatEther,
     parseEther,
     pendingDrops,
@@ -16,6 +17,7 @@ import {
     encodeApprove,
     encodeAggregate3,
     chunkRecipients,
+    deleteReactionAirdrop,
     isJoinReaction,
     joinEmoji,
 } from './airdrop'
@@ -151,7 +153,7 @@ bot.onSlashCommand('drop_close', async (handler, event) => {
     }
     const reactors = Array.from(airdrop.reactorIds)
     if (reactors.length === 0) {
-        reactionAirdrops.delete(messageId)
+        deleteReactionAirdrop(airdrop)
         await handler.sendMessage(
             channelId,
             'No one reacted. Airdrop cancelled. Tokens remain in your wallet.',
@@ -164,8 +166,7 @@ bot.onSlashCommand('drop_close', async (handler, event) => {
         await handler.sendMessage(channelId, 'No reactors have linked wallets; cannot distribute.')
         return
     }
-    const resolved = await resolveMemberAddresses(bot as AnyBot, [airdrop.creatorId]).then((a) => a[0])
-    const creatorWallet = (resolved ?? airdrop.creatorId) as `0x${string}`
+    const creatorWallet = airdrop.creatorId as `0x${string}`
     const amountPer = airdrop.totalRaw / BigInt(recipientAddresses.length)
     const batches = chunkRecipients(recipientAddresses)
     pendingCloseDistributes.set(userId as `0x${string}`, {
@@ -173,6 +174,7 @@ bot.onSlashCommand('drop_close', async (handler, event) => {
         amountPer,
         channelId,
         messageId,
+        followUpMessageId: airdrop.followUpMessageId,
         creatorId: airdrop.creatorId,
         creatorWallet,
         batches,
@@ -207,10 +209,10 @@ bot.onSlashCommand('drop_close', async (handler, event) => {
 const CANCEL_EMOJI = '❌'
 
 bot.onReaction(async (handler, { reaction, channelId, messageId, userId }) => {
-    if (reaction === CANCEL_EMOJI) {
+        if (reaction === CANCEL_EMOJI) {
         const airdrop = reactionAirdrops.get(messageId)
         if (airdrop && airdrop.creatorId.toLowerCase() === userId.toLowerCase()) {
-            reactionAirdrops.delete(messageId)
+            deleteReactionAirdrop(airdrop)
             await handler.sendMessage(
                 channelId,
                 'Airdrop cancelled by creator. Tokens remain in your wallet.',
@@ -248,9 +250,7 @@ bot.onInteractionResponse(async (handler, event) => {
             }
         }
         if (!confirmed) return
-        const resolved = await resolveMemberAddresses(bot as AnyBot, [userId]).then((a) => a[0])
-        const creatorWallet = (resolved ?? userId) as `0x${string}`
-        pending.creatorWallet = creatorWallet
+        const creatorWallet = userId as `0x${string}`
 
         if (pending.mode === 'reaction') {
             pendingDrops.delete(userId as `0x${string}`)
@@ -259,19 +259,25 @@ bot.onInteractionResponse(async (handler, event) => {
                 `**$TOWNS Airdrop** · React ${joinEmoji()} to join. Total: **${formatEther(pending.totalRaw)} $TOWNS**. Creator: <@${pending.creatorId}>. React ${CANCEL_EMOJI} to cancel.`,
                 { mentions: [{ userId: pending.creatorId, displayName: 'Creator' }] },
             )
-            reactionAirdrops.set(msgEventId, {
-                totalRaw: pending.totalRaw,
-                creatorId: pending.creatorId,
-                channelId: pending.channelId,
-                reactorIds: new Set(),
-            })
-            await handler.sendReaction(channelId, msgEventId, joinEmoji())
-            await handler.sendReaction(channelId, msgEventId, CANCEL_EMOJI)
-            await handler.sendMessage(
+            const { eventId: followUpId } = await handler.sendMessage(
                 channelId,
                 `Airdrop live. Message ID: \`${msgEventId}\`. React ${joinEmoji()} to join · React ${CANCEL_EMOJI} to cancel · \`/drop_close ${msgEventId}\` to distribute.`,
                 { mentions: [{ userId: pending.creatorId, displayName: 'Creator' }] },
             )
+            const airdrop: ReactionAirdrop = {
+                totalRaw: pending.totalRaw,
+                creatorId: pending.creatorId,
+                channelId: pending.channelId,
+                reactorIds: new Set(),
+                airdropMessageId: msgEventId,
+                followUpMessageId: followUpId,
+            }
+            reactionAirdrops.set(msgEventId, airdrop)
+            reactionAirdrops.set(followUpId, airdrop)
+            await handler.sendReaction(channelId, msgEventId, joinEmoji())
+            await handler.sendReaction(channelId, msgEventId, CANCEL_EMOJI)
+            await handler.sendReaction(channelId, followUpId, joinEmoji())
+            await handler.sendReaction(channelId, followUpId, CANCEL_EMOJI)
             return
         }
 
@@ -279,8 +285,8 @@ bot.onInteractionResponse(async (handler, event) => {
         const amountPer = pending.totalRaw / BigInt(memberAddrs.length)
         pending.creatorWallet = creatorWallet
         pending.batches = chunkRecipients(memberAddrs)
-        pending.batchIndex = -1
         pending.amountPer = amountPer
+        pending.batchIndex = -1
         const data = encodeApprove(MULTICALL3_ADDRESS, pending.totalRaw)
         await handler.sendInteractionRequest(
             channelId,
@@ -350,6 +356,7 @@ bot.onInteractionResponse(async (handler, event) => {
             if (closeDist.batchIndex >= closeDist.batches.length) {
                 pendingCloseDistributes.delete(uid)
                 reactionAirdrops.delete(closeDist.messageId)
+                reactionAirdrops.delete(closeDist.followUpMessageId)
                 await handler.sendMessage(
                     channelId,
                     `Airdrop closed. **${closeDist.recipients.length}** recipients received **${formatEther(closeDist.amountPer)} $TOWNS** each from your wallet.`,

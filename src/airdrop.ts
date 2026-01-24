@@ -47,6 +47,10 @@ export type ReactionAirdrop = {
     creatorId: Address
     channelId: string
     reactorIds: Set<string>
+    /** Airdrop message eventId (primary; used for /drop_close). */
+    airdropMessageId: string
+    /** Follow-up message eventId; reactions on either message count. */
+    followUpMessageId: string
 }
 
 export type PendingCloseDistribute = {
@@ -54,6 +58,7 @@ export type PendingCloseDistribute = {
     amountPer: bigint
     channelId: string
     messageId: string
+    followUpMessageId: string
     creatorId: Address
     creatorWallet: Address
     /** Batches of recipients for multicall; one tx per batch. batchIndex -1 = awaiting approve. */
@@ -64,6 +69,12 @@ export type PendingCloseDistribute = {
 export const pendingDrops = new Map<Address, PendingDrop>()
 export const reactionAirdrops = new Map<string, ReactionAirdrop>()
 export const pendingCloseDistributes = new Map<Address, PendingCloseDistribute>()
+
+/** Remove airdrop from map (indexed by both airdrop and follow-up message ids). */
+export function deleteReactionAirdrop(airdrop: ReactionAirdrop): void {
+    reactionAirdrops.delete(airdrop.airdropMessageId)
+    reactionAirdrops.delete(airdrop.followUpMessageId)
+}
 
 export function joinEmoji(): string {
     return JOIN_EMOJI
