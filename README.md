@@ -5,13 +5,13 @@ A simple, barebones bot example perfect for beginners learning to build Towns bo
 # Features
 
 - **Slash commands**: `/help`, `/drop`, `/drop_close`
-- **$TOWNS airdrops**: `/drop <amount>` (all channel members) or `/drop react <amount>` (🤭 reactors)
+- **$TOWNS airdrops**: `/drop <amount>` (all channel members) or `/drop react <amount>` (💸 reactors)
 
 ## Slash Commands
 
 - `/help` - Show available commands
 - `/drop <amount>` - Airdrop each channel member that amount of $TOWNS
-- `/drop react <amount>` - Airdrop $TOWNS split among users who react 🤭; react ❌ to cancel; `/drop_close <messageId>` to distribute
+- `/drop react <amount>` - Airdrop $TOWNS split among users who react 💸; react ❌ to cancel; `/drop_close <messageId>` to distribute
 - `/drop_close <messageId>` - Close a reaction airdrop and send $TOWNS to reactors
 
 # Setup
@@ -49,7 +49,7 @@ Once the bot is running, installed to a space and added to a channel:
 
 - `/help` - See all available commands
 - `/drop <amount>` or `/drop react <amount>` - Create an airdrop
-- Reaction airdrops: react 🤭 to join, react ❌ (creator only) to cancel, `/drop_close <messageId>` to distribute
+- Reaction airdrops: react 💸 to join, react ❌ (creator only) to cancel, `/drop_close <messageId>` to distribute
 
 # Code Structure
 
@@ -65,7 +65,7 @@ Main bot logic with:
 
 1. **Bot initialization** (`makeTownsBot`) - Creates bot instance with credentials and commands
 2. **Slash command handlers** (`onSlashCommand`) - Handle `/help`, `/drop`, `/drop_close`
-3. **Reaction handler** (`onReaction`) - Track 🤭 reactors for reaction airdrops
+3. **Reaction handler** (`onReaction`) - Track 💸 reactors for reaction airdrops
 4. **Interaction response handler** (`onInteractionResponse`) - Forms and transaction confirmations
 5. **Bot server setup** (`bot.start()`) - Starts the bot server with a Hono HTTP server
 

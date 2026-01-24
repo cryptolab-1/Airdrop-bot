@@ -1,7 +1,7 @@
 /**
  * Airdrop state and helpers for $TOWNS airdrops.
  * - Fixed: airdrop every channel member a fixed amount.
- * - Reaction: airdrop active users who react 🤭; total split between them.
+ * - Reaction: airdrop active users who react 💸 (money with wings); total split between them.
  */
 
 import type { Address } from 'viem'
@@ -15,7 +15,9 @@ import type { Bot, BotCommand } from '@towns-protocol/bot'
 export type AnyBot = Bot<BotCommand[]>
 
 export const TOWNS_ADDRESS = '0x00000000A22C618fd6b4D7E9A335C4B96B189a38' as const
-const MONEY_MOUTH = '🤭'
+/** Money with wings 💸 – react to join reaction airdrops. */
+const JOIN_EMOJI = '💸'
+const JOIN_SHORTCODES = ['money_with_wings', 'moneywithwings', 'money-with-wings'] as const
 
 export type AirdropMode = 'fixed' | 'reaction'
 
@@ -52,12 +54,15 @@ export const pendingDrops = new Map<Address, PendingDrop>()
 export const reactionAirdrops = new Map<string, ReactionAirdrop>()
 export const pendingCloseDistributes = new Map<Address, PendingCloseDistribute>()
 
-export function moneyMouthEmoji(): string {
-    return MONEY_MOUTH
+export function joinEmoji(): string {
+    return JOIN_EMOJI
 }
 
-export function isMoneyMouth(r: string): boolean {
-    return r === MONEY_MOUTH
+/** Match 💸 or shortcodes like "money_with_wings" (Towns may send either). */
+export function isJoinReaction(r: string): boolean {
+    if (r === JOIN_EMOJI) return true
+    const n = (x: string) => x.toLowerCase().replace(/[^a-z0-9]/g, '')
+    return JOIN_SHORTCODES.some((s) => n(r) === n(s))
 }
 
 /**
