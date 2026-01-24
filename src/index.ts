@@ -24,9 +24,9 @@ bot.onSlashCommand('help', async (handler, { channelId }) => {
     await handler.sendMessage(
         channelId,
         '**Available Commands:**\n\n' +
-            '• `/help` - Show this help message\n' +
-            '• `/drop <amount>` - Airdrop each channel member that amount of $TOWNS\n' +
-            '• `/drop react <amount>` - Airdrop $TOWNS split among users who react 🤭; react ❌ to cancel\n' +
+            '• `/help` - Show this help message\n\n' +
+            '• `/drop <amount>` - Airdrop each channel member that amount of $TOWNS\n\n' +
+            '• `/drop react <amount>` - Airdrop $TOWNS split among users who react 🤭; react ❌ to cancel\n\n' +
             '• `/drop_close <messageId>` - Close a reaction airdrop and distribute',
     )
 })
@@ -162,15 +162,8 @@ bot.onSlashCommand('drop_close', async (handler, event) => {
         await handler.sendMessage(channelId, 'No reactors have linked wallets; cannot distribute.')
         return
     }
-    const creatorWallet = await resolveMemberAddresses(bot as AnyBot, [airdrop.creatorId]).then((a) => a[0])
-    if (!creatorWallet) {
-        await handler.sendMessage(
-            channelId,
-            'Creator has no linked wallet; cannot distribute.',
-            { mentions: [{ userId: airdrop.creatorId, displayName: 'Creator' }] },
-        )
-        return
-    }
+    const resolved = await resolveMemberAddresses(bot as AnyBot, [airdrop.creatorId]).then((a) => a[0])
+    const creatorWallet = (resolved ?? airdrop.creatorId) as `0x${string}`
     try {
         await distributeFromCreator(bot as AnyBot, creatorWallet, recipientAddresses, airdrop.totalRaw, 'reaction')
     } catch (e) {
@@ -232,16 +225,8 @@ bot.onInteractionResponse(async (handler, event) => {
             }
         }
         if (!confirmed) return
-        const creatorWallet = await resolveMemberAddresses(bot as AnyBot, [userId]).then((a) => a[0])
-        if (!creatorWallet) {
-            pendingDrops.delete(userId as `0x${string}`)
-            await handler.sendMessage(
-                channelId,
-                'You need a linked wallet to approve the airdrop.',
-                { mentions: [{ userId, displayName: 'Creator' }] },
-            )
-            return
-        }
+        const resolved = await resolveMemberAddresses(bot as AnyBot, [userId]).then((a) => a[0])
+        const creatorWallet = (resolved ?? userId) as `0x${string}`
         pending.creatorWallet = creatorWallet
         const data = encodeApprove(bot.appAddress, pending.totalRaw)
         await handler.sendInteractionRequest(
