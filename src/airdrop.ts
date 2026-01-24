@@ -8,13 +8,20 @@ import type { Address } from 'viem'
 import { parseEther, formatEther } from 'viem'
 import { erc20Abi } from 'viem'
 import { encodeFunctionData } from 'viem'
-import { waitForTransactionReceipt } from 'viem/actions'
+import { multicall3Abi } from 'viem'
 import { getSmartAccountFromUserId } from '@towns-protocol/bot'
 import type { Bot, BotCommand } from '@towns-protocol/bot'
 
 export type AnyBot = Bot<BotCommand[]>
 
 export const TOWNS_ADDRESS = '0x00000000A22C618fd6b4D7E9A335C4B96B189a38' as const
+/** Multicall3 on Base (same address on many chains). */
+export const MULTICALL3_ADDRESS = '0xcA11bde05977b3631167028862bE2a173976CA11' as const
+/**
+ * Max transfers per multicall batch. Gas-safe limit; tune if needed.
+ * ~65k gas per ERC20 transfer; Base block ~30M → ~400+ possible, we use 80.
+ */
+export const MAX_TRANSFERS_PER_BATCH = 80
 /** Money with wings 💸 – react to join reaction airdrops. */
 const JOIN_EMOJI = '💸'
 const JOIN_SHORTCODES = ['money_with_wings', 'moneywithwings', 'money-with-wings'] as const
@@ -29,9 +36,10 @@ export type PendingDrop = {
     creatorId: Address
     creatorWallet?: Address
     memberAddresses?: Address[] // fixed mode: resolved smart accounts
-    /** Fixed-mode distribution: user signs each transfer. */
-    distributeRecipients?: Address[]
-    distributeIndex?: number
+    /** Fixed-mode multicall batches. */
+    batches?: Address[][]
+    batchIndex?: number
+    amountPer?: bigint
 }
 
 export type ReactionAirdrop = {
@@ -47,7 +55,10 @@ export type PendingCloseDistribute = {
     channelId: string
     messageId: string
     creatorId: Address
-    index: number
+    creatorWallet: Address
+    /** Batches of recipients for multicall; one tx per batch. batchIndex -1 = awaiting approve. */
+    batches: Address[][]
+    batchIndex: number
 }
 
 export const pendingDrops = new Map<Address, PendingDrop>()
@@ -103,13 +114,60 @@ export async function resolveMemberAddresses(
 }
 
 /**
- * Encode ERC20 transfer(recipient, amount) for creator to send from their wallet.
+ * Encode ERC20 approve(spender, amount). Used to approve Multicall3 before batched transferFrom.
  */
-export function encodeTransfer(recipient: Address, amountRaw: bigint): `0x${string}` {
+export function encodeApprove(spender: Address, amountRaw: bigint): `0x${string}` {
     return encodeFunctionData({
         abi: erc20Abi,
-        functionName: 'transfer',
-        args: [recipient, amountRaw],
+        functionName: 'approve',
+        args: [spender, amountRaw],
+    })
+}
+
+/**
+ * Encode ERC20 transferFrom(from, to, amount). Multicall will call this; from must have approved Multicall3.
+ */
+export function encodeTransferFrom(
+    from: Address,
+    to: Address,
+    amountRaw: bigint
+): `0x${string}` {
+    return encodeFunctionData({
+        abi: erc20Abi,
+        functionName: 'transferFrom',
+        args: [from, to, amountRaw],
+    })
+}
+
+/**
+ * Chunk recipients into batches of at most MAX_TRANSFERS_PER_BATCH.
+ */
+export function chunkRecipients(recipients: Address[]): Address[][] {
+    const out: Address[][] = []
+    for (let i = 0; i < recipients.length; i += MAX_TRANSFERS_PER_BATCH) {
+        out.push(recipients.slice(i, i + MAX_TRANSFERS_PER_BATCH))
+    }
+    return out
+}
+
+/**
+ * Encode Multicall3 aggregate3(calls) for a batch of transferFrom(creator, recipient, amountPer).
+ * Creator must have approved MULTICALL3_ADDRESS for at least amountPer * recipients.length.
+ */
+export function encodeAggregate3(
+    creator: Address,
+    recipients: Address[],
+    amountPer: bigint
+): `0x${string}` {
+    const calls = recipients.map((to) => ({
+        target: TOWNS_ADDRESS as Address,
+        allowFailure: false as const,
+        callData: encodeTransferFrom(creator, to, amountPer),
+    }))
+    return encodeFunctionData({
+        abi: multicall3Abi,
+        functionName: 'aggregate3',
+        args: [calls],
     })
 }
 
