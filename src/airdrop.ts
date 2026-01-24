@@ -24,7 +24,16 @@ export const MULTICALL3_ADDRESS = '0xcA11bde05977b3631167028862bE2a173976CA11' a
 export const MAX_TRANSFERS_PER_BATCH = 80
 /** Money with wings 💸 – react to join reaction airdrops. */
 const JOIN_EMOJI = '💸'
-const JOIN_SHORTCODES = ['money_with_wings', 'moneywithwings', 'money-with-wings'] as const
+const JOIN_SHORTCODES = [
+    'money_with_wings',
+    'moneywithwings',
+    'money-with-wings',
+    'dollar',
+    'moneybag',
+    'money_bag',
+    'banknote',
+    'dollar_banknote',
+] as const
 
 export type AirdropMode = 'fixed' | 'reaction'
 
@@ -81,6 +90,30 @@ export function deleteReactionAirdrop(airdrop: ReactionAirdrop): void {
     reactionAirdrops.delete(airdrop.airdropMessageId)
     reactionAirdrops.delete(airdrop.followUpMessageId)
     reactionAirdrops.delete(airdrop.threadId)
+}
+
+/**
+ * Find airdrop by messageId. Tries direct lookup, then checks all airdrops'
+ * airdropMessageId, followUpMessageId, threadId (handles format mismatches).
+ */
+export function findReactionAirdrop(messageId: string): ReactionAirdrop | undefined {
+    const direct = reactionAirdrops.get(messageId)
+    if (direct) return direct
+    const trimmed = messageId.trim()
+    if (trimmed !== messageId) {
+        const byTrim = reactionAirdrops.get(trimmed)
+        if (byTrim) return byTrim
+    }
+    for (const a of reactionAirdrops.values()) {
+        if (
+            a.airdropMessageId === messageId ||
+            a.followUpMessageId === messageId ||
+            a.threadId === messageId ||
+            (trimmed && (a.airdropMessageId === trimmed || a.followUpMessageId === trimmed || a.threadId === trimmed))
+        )
+            return a
+    }
+    return undefined
 }
 
 export function joinEmoji(): string {

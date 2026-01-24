@@ -18,6 +18,7 @@ import {
     encodeAggregate3,
     chunkRecipients,
     deleteReactionAirdrop,
+    findReactionAirdrop,
     isJoinReaction,
     joinEmoji,
 } from './airdrop'
@@ -142,7 +143,7 @@ bot.onSlashCommand('drop_close', async (handler, event) => {
         await handler.sendMessage(channelId, 'Usage: `/drop_close <messageId>`. Use the airdrop message ID.')
         return
     }
-    const airdrop = reactionAirdrops.get(messageId)
+    const airdrop = findReactionAirdrop(messageId)
     if (!airdrop) {
         await handler.sendMessage(channelId, 'No reaction airdrop found for that message.')
         return
@@ -197,7 +198,6 @@ bot.onSlashCommand('drop_close', async (handler, event) => {
                 to: TOWNS_ADDRESS as `0x${string}`,
                 value: '0',
                 data,
-                signerWallet: creatorWallet,
             },
             recipient: userId as `0x${string}`,
         },
@@ -214,7 +214,7 @@ const CANCEL_EMOJI = '❌'
 
 bot.onReaction(async (handler, { reaction, channelId, messageId, userId }) => {
         if (reaction === CANCEL_EMOJI) {
-        const airdrop = reactionAirdrops.get(messageId)
+        const airdrop = findReactionAirdrop(messageId)
         if (airdrop && airdrop.creatorId.toLowerCase() === userId.toLowerCase()) {
             deleteReactionAirdrop(airdrop)
             await handler.sendMessage(
@@ -226,7 +226,7 @@ bot.onReaction(async (handler, { reaction, channelId, messageId, userId }) => {
         }
     }
     if (isJoinReaction(reaction)) {
-        const airdrop = reactionAirdrops.get(messageId)
+        const airdrop = findReactionAirdrop(messageId)
         if (airdrop) airdrop.reactorIds.add(userId)
     }
 })
@@ -316,7 +316,6 @@ bot.onInteractionResponse(async (handler, event) => {
                     to: TOWNS_ADDRESS as `0x${string}`,
                     value: '0',
                     data,
-                    signerWallet: creatorWallet,
                 },
                 recipient: userId as `0x${string}`,
             },
@@ -398,7 +397,6 @@ bot.onInteractionResponse(async (handler, event) => {
                         to: MULTICALL3_ADDRESS as `0x${string}`,
                         value: '0',
                         data,
-                        signerWallet: closeDist.creatorWallet,
                     },
                     recipient: uid,
                 },
@@ -475,7 +473,6 @@ bot.onInteractionResponse(async (handler, event) => {
                     to: MULTICALL3_ADDRESS as `0x${string}`,
                     value: '0',
                     data,
-                    signerWallet: pending.creatorWallet!,
                 },
                 recipient: uid,
             },
