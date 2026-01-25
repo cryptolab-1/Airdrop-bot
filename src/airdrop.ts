@@ -45,10 +45,10 @@ export type PendingDrop = {
     creatorId: Address
     creatorWallet?: Address
     memberAddresses?: Address[] // fixed mode: resolved smart accounts
-    /** Fixed-mode multicall batches. */
-    batches?: Address[][]
-    batchIndex?: number
     amountPer?: bigint
+    /** Batches of recipients for multicall; one tx per batch. */
+    batches?: Address[][]
+    batchIndex?: number // Current batch index (0-based)
     /** Thread to post follow-ups in (avoid channel spam). */
     threadId?: string
 }
@@ -71,9 +71,9 @@ export type PendingCloseDistribute = {
     messageId: string
     creatorId: Address
     creatorWallet: Address
-    /** Batches of recipients for multicall; one tx per batch. batchIndex -1 = awaiting approve. */
+    /** Batches of recipients for multicall; one tx per batch. */
     batches: Address[][]
-    batchIndex: number
+    batchIndex: number // Current batch index (0-based)
     /** Thread to post close follow-ups in. */
     threadId: string
 }
@@ -161,28 +161,13 @@ export async function resolveMemberAddresses(
 }
 
 /**
- * Encode ERC20 approve(spender, amount). Used to approve Multicall3 before batched transferFrom.
+ * Encode ERC20 transfer(to, amount). Direct transfer from sender's wallet.
  */
-export function encodeApprove(spender: Address, amountRaw: bigint): `0x${string}` {
+export function encodeTransfer(to: Address, amountRaw: bigint): `0x${string}` {
     return encodeFunctionData({
         abi: erc20Abi,
-        functionName: 'approve',
-        args: [spender, amountRaw],
-    })
-}
-
-/**
- * Encode ERC20 transferFrom(from, to, amount). Multicall will call this; from must have approved Multicall3.
- */
-export function encodeTransferFrom(
-    from: Address,
-    to: Address,
-    amountRaw: bigint
-): `0x${string}` {
-    return encodeFunctionData({
-        abi: erc20Abi,
-        functionName: 'transferFrom',
-        args: [from, to, amountRaw],
+        functionName: 'transfer',
+        args: [to, amountRaw],
     })
 }
 
@@ -198,18 +183,17 @@ export function chunkRecipients(recipients: Address[]): Address[][] {
 }
 
 /**
- * Encode Multicall3 aggregate3(calls) for a batch of transferFrom(creator, recipient, amountPer).
- * Creator must have approved MULTICALL3_ADDRESS for at least amountPer * recipients.length.
+ * Encode Multicall3 aggregate3(calls) for a batch of transfer(recipient, amountPer).
+ * No approval needed - transfers come directly from creator's wallet.
  */
-export function encodeAggregate3(
-    creator: Address,
+export function encodeAggregate3Transfers(
     recipients: Address[],
     amountPer: bigint
 ): `0x${string}` {
     const calls = recipients.map((to) => ({
         target: TOWNS_ADDRESS as Address,
         allowFailure: false as const,
-        callData: encodeTransferFrom(creator, to, amountPer),
+        callData: encodeTransfer(to, amountPer),
     }))
     return encodeFunctionData({
         abi: multicall3Abi,

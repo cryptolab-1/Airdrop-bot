@@ -16,10 +16,9 @@ import {
     reactionAirdrops,
     getChannelMemberIds,
     resolveMemberAddresses,
-    encodeApprove,
-    encodeAggregate3,
-    encodeTransferFrom,
+    encodeTransfer,
     chunkRecipients,
+    encodeAggregate3Transfers,
     deleteReactionAirdrop,
     findReactionAirdrop,
     isJoinReaction,
@@ -50,62 +49,21 @@ function filterOutBotAndCreator(userIds: string[], creatorId: string): string[] 
     })
 }
 
-async function findFirstFailingTransfer(
-    creator: Address,
-    recipients: Address[],
-    amountPer: bigint,
-    totalNeeded: bigint
-): Promise<{ to: Address; reason: string } | null> {
-    // Check balance and allowance first
-    const [balance, allowance] = await Promise.all([
-        readContract(bot.viem, {
-            address: TOWNS_ADDRESS as Address,
-            abi: erc20Abi,
-            functionName: 'balanceOf',
-            args: [creator],
-        }),
-        readContract(bot.viem, {
-            address: TOWNS_ADDRESS as Address,
-            abi: erc20Abi,
-            functionName: 'allowance',
-            args: [creator, MULTICALL3_ADDRESS as Address],
-        }),
-    ])
+async function checkBalance(creator: Address, totalNeeded: bigint): Promise<{ ok: boolean; reason?: string }> {
+    const balance = await readContract(bot.viem, {
+        address: TOWNS_ADDRESS as Address,
+        abi: erc20Abi,
+        functionName: 'balanceOf',
+        args: [creator],
+    })
 
     if (balance < totalNeeded) {
         return {
-            to: recipients[0]!,
-            reason: `Insufficient balance at ${creator.slice(0, 10)}...: have ${formatEther(balance)}, need ${formatEther(totalNeeded)} $TOWNS. Ensure tokens are in the wallet you approved from.`,
+            ok: false,
+            reason: `Insufficient balance at ${creator.slice(0, 10)}...: have ${formatEther(balance)}, need ${formatEther(totalNeeded)} $TOWNS`,
         }
     }
-    if (allowance < totalNeeded) {
-        return {
-            to: recipients[0]!,
-            reason: `Insufficient allowance at ${creator.slice(0, 10)}...: approved ${formatEther(allowance)}, need ${formatEther(totalNeeded)} $TOWNS. Re-approve from the same wallet.`,
-        }
-    }
-
-    // Check each transfer
-    for (const to of recipients) {
-        try {
-            await call(bot.viem, {
-                to: TOWNS_ADDRESS as Address,
-                data: encodeTransferFrom(creator, to, amountPer),
-                account: MULTICALL3_ADDRESS as Address,
-            })
-        } catch (e) {
-            const reason = e instanceof Error ? e.message : String(e)
-            // If it's a generic revert, try to provide more context
-            if (reason.includes('unknown reason') || reason.includes('Execution reverted')) {
-                return {
-                    to,
-                    reason: `Transfer failed (likely insufficient balance/allowance or recipient issue). Balance: ${formatEther(balance)}, Allowance: ${formatEther(allowance)}`,
-                }
-            }
-            return { to, reason }
-        }
-    }
-    return null
+    return { ok: true }
 }
 
 bot.onSlashCommand('help', async (handler, { channelId }) => {
@@ -190,7 +148,7 @@ bot.onSlashCommand('drop', async (handler, event) => {
         )
         await handler.sendMessage(
             channelId,
-            `You'll approve **${formatEther(totalRaw)} $TOWNS** total, split among **${n}** members (**${formatEther(per)}** each). Then sign 1 or more batch tx(s) (up to **${MAX_TRANSFERS_PER_BATCH}** transfers per tx). Confirm above.`,
+            `You'll distribute **${formatEther(totalRaw)} $TOWNS** total, split among **${n}** members (**${formatEther(per)}** each). You'll sign **${n}** transfer tx(s). Confirm above.`,
             { mentions: [{ userId, displayName: 'Creator' }] },
         )
         return
@@ -291,14 +249,27 @@ bot.onReaction(async (handler, event) => {
         const creatorResolved = await resolveMemberAddresses(bot as AnyBot, [airdrop.creatorId])
         const creatorWallet = (creatorResolved[0] ?? airdrop.creatorId) as `0x${string}`
         const amountPer = airdrop.totalRaw / BigInt(recipientAddresses.length)
-        const batches = chunkRecipients(recipientAddresses)
+        
+        // Check balance first
+        const balanceCheck = await checkBalance(creatorWallet, airdrop.totalRaw)
+        if (!balanceCheck.ok) {
+            await handler.sendMessage(
+                channelId,
+                `Cannot distribute: ${balanceCheck.reason}`,
+                { threadId, mentions: [{ userId: airdrop.creatorId, displayName: 'Creator' }] },
+            )
+            return
+        }
+        
         // Log recipient addresses for debugging (first 3 only)
         const addrPreview = recipientAddresses.slice(0, 3).map(a => a.slice(0, 10) + '...').join(', ')
+        const batches = chunkRecipients(recipientAddresses)
         await handler.sendMessage(
             channelId,
-            `Distributing to **${recipientAddresses.length}** recipients (${recipientAddresses.length > 3 ? addrPreview + '...' : addrPreview}).`,
+            `Distributing to **${recipientAddresses.length}** recipients (${recipientAddresses.length > 3 ? addrPreview + '...' : addrPreview}). You'll sign **${batches.length}** batch tx(s) (up to ${MAX_TRANSFERS_PER_BATCH} transfers per tx).`,
             { threadId, mentions: [{ userId: airdrop.creatorId, displayName: 'Creator' }] },
         )
+        
         pendingCloseDistributes.set(userId as `0x${string}`, {
             recipients: recipientAddresses,
             amountPer,
@@ -307,20 +278,23 @@ bot.onReaction(async (handler, event) => {
             creatorId: airdrop.creatorId,
             creatorWallet,
             batches,
-            batchIndex: -1,
+            batchIndex: 0,
             threadId,
         })
-        const data = encodeApprove(MULTICALL3_ADDRESS, airdrop.totalRaw)
+        
+        // Send first batch
+        const firstBatch = batches[0]!
+        const data = encodeAggregate3Transfers(firstBatch, amountPer)
         await handler.sendInteractionRequest(
             channelId,
             {
                 type: 'transaction',
-                id: `drop-launch-approve-${Date.now()}`,
-                title: 'Approve $TOWNS',
-                subtitle: `Approve ${formatEther(airdrop.totalRaw)} $TOWNS for batched distribute`,
+                id: `drop-close-batch-${Date.now()}-0`,
+                title: 'Distribute $TOWNS (batch)',
+                subtitle: `Batch 1/${batches.length} (${firstBatch.length} transfers)`,
                 tx: {
                     chainId: '8453',
-                    to: TOWNS_ADDRESS as `0x${string}`,
+                    to: MULTICALL3_ADDRESS as `0x${string}`,
                     value: '0',
                     data,
                 },
@@ -330,7 +304,7 @@ bot.onReaction(async (handler, event) => {
         )
         await handler.sendMessage(
             channelId,
-            `Sign **approve** tx, then **${batches.length}** batch tx(s) (up to ${MAX_TRANSFERS_PER_BATCH} per tx).`,
+            `Sign batch 1/${batches.length} (${firstBatch.length} transfers, ${formatEther(amountPer)} $TOWNS each)`,
             { threadId, mentions: [{ userId: airdrop.creatorId, displayName: 'Creator' }] },
         )
         return
@@ -403,22 +377,44 @@ bot.onInteractionResponse(async (handler, event) => {
         const memberAddrs = pending.memberAddresses!
         const amountPer = pending.totalRaw / BigInt(memberAddrs.length)
         pending.creatorWallet = creatorWallet
-        pending.batches = chunkRecipients(memberAddrs)
         pending.amountPer = amountPer
-        pending.batchIndex = -1
+        const batches = chunkRecipients(memberAddrs)
+        pending.batches = batches
+        pending.batchIndex = 0
         pending.threadId = threadId
+        
+        // Check balance first
+        const balanceCheck = await checkBalance(creatorWallet, pending.totalRaw)
+        if (!balanceCheck.ok) {
+            pendingDrops.delete(userId as `0x${string}`)
+            await handler.sendMessage(
+                channelId,
+                `Cannot distribute: ${balanceCheck.reason}`,
+                { threadId, mentions: [{ userId, displayName: 'Creator' }] },
+            )
+            return
+        }
+        
         const addrCount = memberAddrs.length
-        const data = encodeApprove(MULTICALL3_ADDRESS, pending.totalRaw)
+        await handler.sendMessage(
+            channelId,
+            `Distributing to **${addrCount}** members. You'll sign **${batches.length}** batch tx(s) (up to ${MAX_TRANSFERS_PER_BATCH} transfers per tx).`,
+            { threadId, mentions: [{ userId, displayName: 'Creator' }] },
+        )
+        
+        // Send first batch
+        const firstBatch = batches[0]!
+        const data = encodeAggregate3Transfers(firstBatch, amountPer)
         await handler.sendInteractionRequest(
             channelId,
             {
                 type: 'transaction',
-                id: `drop-fixed-approve-${Date.now()}`,
-                title: 'Approve $TOWNS',
-                subtitle: `Approve ${formatEther(pending.totalRaw)} $TOWNS for batched airdrop`,
+                id: `drop-fixed-batch-${Date.now()}-0`,
+                title: 'Distribute $TOWNS (batch)',
+                subtitle: `Batch 1/${batches.length} (${firstBatch.length} transfers)`,
                 tx: {
                     chainId: '8453',
-                    to: TOWNS_ADDRESS as `0x${string}`,
+                    to: MULTICALL3_ADDRESS as `0x${string}`,
                     value: '0',
                     data,
                 },
@@ -428,7 +424,7 @@ bot.onInteractionResponse(async (handler, event) => {
         )
         await handler.sendMessage(
             channelId,
-            `Sign **approve** tx, then 1 or more **batch** tx(s) (up to ${MAX_TRANSFERS_PER_BATCH} per tx). Distributing to **${addrCount}** members.`,
+            `Sign batch 1/${batches.length} (${firstBatch.length} transfers, ${formatEther(amountPer)} $TOWNS each)`,
             { threadId, mentions: [{ userId, displayName: 'Creator' }] },
         )
         return
@@ -477,13 +473,12 @@ bot.onInteractionResponse(async (handler, event) => {
                 )
                 return
             }
-            const isApprove = closeDist.batchIndex === -1
-            if (isApprove) {
-                closeDist.batchIndex = 0
-            } else {
-                closeDist.batchIndex += 1
-            }
+            
+            // Move to next batch
+            closeDist.batchIndex += 1
+            
             if (closeDist.batchIndex >= closeDist.batches.length) {
+                // All batches complete
                 pendingCloseDistributes.delete(uid)
                 reactionAirdrops.delete(closeDist.messageId)
                 reactionAirdrops.delete(closeDist.threadId)
@@ -494,39 +489,17 @@ bot.onInteractionResponse(async (handler, event) => {
                 )
                 return
             }
-            const batch = closeDist.batches[closeDist.batchIndex]!
-            const data = encodeAggregate3(closeDist.creatorWallet, batch, closeDist.amountPer)
-            try {
-                await call(bot.viem, {
-                    to: MULTICALL3_ADDRESS as Address,
-                    data,
-                    account: closeDist.creatorWallet as Address,
-                })
-            } catch (simErr) {
-                const totalNeeded = closeDist.amountPer * BigInt(batch.length)
-                const fail = await findFirstFailingTransfer(
-                    closeDist.creatorWallet,
-                    batch,
-                    closeDist.amountPer,
-                    totalNeeded
-                )
-                const detail = fail
-                    ? `First failing transfer to \`${fail.to.slice(0, 10)}...\`: ${fail.reason}`
-                    : (simErr instanceof Error ? simErr.message : String(simErr))
-                await handler.sendMessage(
-                    channelId,
-                    `Batch ${closeDist.batchIndex + 1}/${closeDist.batches.length} would fail: **${detail}**. Check balance, allowance, and recipient wallets. React ${LAUNCH_EMOJI} to retry.`,
-                    { threadId, mentions: [{ userId: closeDist.creatorId, displayName: 'Creator' }] },
-                )
-                return
-            }
+            
+            // Send next batch
+            const nextBatch = closeDist.batches[closeDist.batchIndex]!
+            const data = encodeAggregate3Transfers(nextBatch, closeDist.amountPer)
             await handler.sendInteractionRequest(
                 channelId,
                 {
                     type: 'transaction',
                     id: `drop-close-batch-${Date.now()}-${closeDist.batchIndex}`,
                     title: 'Distribute $TOWNS (batch)',
-                    subtitle: `Batch ${closeDist.batchIndex + 1} / ${closeDist.batches.length} (${batch.length} transfers)`,
+                    subtitle: `Batch ${closeDist.batchIndex + 1}/${closeDist.batches.length} (${nextBatch.length} transfers)`,
                     tx: {
                         chainId: '8453',
                         to: MULTICALL3_ADDRESS as `0x${string}`,
@@ -539,7 +512,7 @@ bot.onInteractionResponse(async (handler, event) => {
             )
             await handler.sendMessage(
                 channelId,
-                `Sign batch ${closeDist.batchIndex + 1} / ${closeDist.batches.length} (${batch.length} transfers)…`,
+                `Sign batch ${closeDist.batchIndex + 1}/${closeDist.batches.length} (${nextBatch.length} transfers, ${formatEther(closeDist.amountPer)} $TOWNS each)`,
                 { threadId, mentions: [{ userId: closeDist.creatorId, displayName: 'Creator' }] },
             )
             return
@@ -548,14 +521,6 @@ bot.onInteractionResponse(async (handler, event) => {
         const pending = pendingDrops.get(uid)
         if (!pending) return
         const threadId = pending.threadId
-        
-        // Check if this is an approve transaction (batchIndex === -1 means awaiting approve)
-        const isApproveTx = pending.batchIndex === -1
-        const txId = tx.requestId ?? tx.id ?? ''
-        if (isApproveTx && txId && !txId.startsWith('drop-fixed-approve-')) {
-            // Not our approve transaction, ignore
-            return
-        }
         
         if (tx.error) {
             pendingDrops.delete(uid)
@@ -595,15 +560,13 @@ bot.onInteractionResponse(async (handler, event) => {
             return
         }
 
-        const isApprove = pending.batchIndex === -1
-        if (isApprove) {
-            pending.batchIndex = 0
-        } else {
-            pending.batchIndex! += 1
-        }
+        // Move to next batch
+        pending.batchIndex = (pending.batchIndex ?? 0) + 1
         const batches = pending.batches!
         const amountPer = pending.amountPer!
-        if (pending.batchIndex! >= batches.length) {
+        
+        if (pending.batchIndex >= batches.length) {
+            // All batches complete
             pendingDrops.delete(uid)
             const n = pending.memberAddresses!.length
             await handler.sendMessage(
@@ -613,40 +576,17 @@ bot.onInteractionResponse(async (handler, event) => {
             )
             return
         }
-        const batch = batches[pending.batchIndex!]!
-        const data = encodeAggregate3(pending.creatorWallet!, batch, amountPer)
-        try {
-            await call(bot.viem, {
-                to: MULTICALL3_ADDRESS as Address,
-                data,
-                account: pending.creatorWallet! as Address,
-            })
-        } catch (simErr) {
-            pendingDrops.delete(uid)
-            const totalNeeded = amountPer * BigInt(batch.length)
-            const fail = await findFirstFailingTransfer(
-                pending.creatorWallet!,
-                batch,
-                amountPer,
-                totalNeeded
-            )
-            const detail = fail
-                ? `First failing transfer to \`${fail.to.slice(0, 10)}...\`: ${fail.reason}`
-                : (simErr instanceof Error ? simErr.message : String(simErr))
-            await handler.sendMessage(
-                channelId,
-                `Batch ${pending.batchIndex! + 1}/${batches.length} would fail: **${detail}**. Check balance, allowance, and recipient wallets.`,
-                { threadId, mentions: [{ userId, displayName: 'Creator' }] },
-            )
-            return
-        }
+        
+        // Send next batch
+        const nextBatch = batches[pending.batchIndex]!
+        const data = encodeAggregate3Transfers(nextBatch, amountPer)
         await handler.sendInteractionRequest(
             channelId,
             {
                 type: 'transaction',
                 id: `drop-fixed-batch-${Date.now()}-${pending.batchIndex}`,
                 title: 'Distribute $TOWNS (batch)',
-                subtitle: `Batch ${pending.batchIndex! + 1} / ${batches.length} (${batch.length} transfers)`,
+                subtitle: `Batch ${pending.batchIndex + 1}/${batches.length} (${nextBatch.length} transfers)`,
                 tx: {
                     chainId: '8453',
                     to: MULTICALL3_ADDRESS as `0x${string}`,
@@ -659,7 +599,7 @@ bot.onInteractionResponse(async (handler, event) => {
         )
         await handler.sendMessage(
             channelId,
-            `Sign batch ${pending.batchIndex! + 1} / ${batches.length} (${batch.length} transfers)…`,
+            `Sign batch ${pending.batchIndex + 1}/${batches.length} (${nextBatch.length} transfers, ${formatEther(amountPer)} $TOWNS each)`,
             { threadId, mentions: [{ userId, displayName: 'Creator' }] },
         )
     }
