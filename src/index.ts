@@ -14,7 +14,6 @@ import {
     pendingDrops,
     reactionAirdrops,
     getChannelMemberIds,
-    resolveMemberAddresses,
     encodeTransfer,
     chunkRecipients,
     deleteReactionAirdrop,
@@ -174,8 +173,8 @@ bot.onSlashCommand('drop', async (handler, event) => {
             )
             return
         }
-        let memberAddresses = await resolveMemberAddresses(bot as AnyBot, filteredUserIds)
-        memberAddresses = filterOutBotRecipients(memberAddresses)
+        // Use Towns wallet (userId) as address; do not resolve to linked smart account
+        let memberAddresses = filterOutBotRecipients(filteredUserIds.map((u) => u as Address))
         if (memberAddresses.length === 0) {
             await handler.sendMessage(
                 channelId,
@@ -291,8 +290,8 @@ bot.onReaction(async (handler, event) => {
             )
             return
         }
-        let recipientAddresses = await resolveMemberAddresses(bot as AnyBot, reactors)
-        recipientAddresses = filterOutBotRecipients(recipientAddresses)
+        // Use Towns wallet (userId) as address; do not resolve to linked smart account
+        let recipientAddresses = filterOutBotRecipients(reactors.map((r) => r as Address))
         if (recipientAddresses.length === 0) {
             await handler.sendMessage(channelId, 'No reactors to distribute to (or only bot).', {
                 threadId,
