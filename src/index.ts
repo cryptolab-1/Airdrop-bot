@@ -1,5 +1,5 @@
 import { makeTownsBot } from '@towns-protocol/bot'
-import { readContract, waitForTransactionReceipt, writeContract } from 'viem/actions'
+import { readContract, waitForTransactionReceipt } from 'viem/actions'
 import type { Address } from 'viem'
 import { encodeFunctionData, erc20Abi, multicall3Abi } from 'viem'
 import { execute as executeErc7821 } from 'viem/experimental/erc7821'
@@ -37,29 +37,21 @@ type PendingDeposit = {
     creatorId: Address
     mode: 'fixed' | 'reaction'
     messageId?: string
-    /** Address that received the deposit (treasury or gas wallet); same as "from" in distribution. */
+    /** Treasury (bot.appAddress) that received the deposit; distribution runs from here. */
     depositTarget: Address
 }
 const pendingDeposits = new Map<Address, PendingDeposit>()
 
-/**
- * Resolve where creators should send TOWNS and where we distribute from.
- * Treasury (bot.appAddress) = holds funds, used when ERC-7821 execute() is supported.
- * Gas wallet (bot.botId) = signs txs, used as fallback when execute() is not supported.
- */
+/** Deposit target is treasury only; must support ERC-7821 execute() for distribution. */
 async function getBotDepositTarget(): Promise<Address | undefined> {
     const treasury = bot.appAddress as Address | undefined
-    const gas = bot.botId as Address | undefined
-    if (!treasury && !gas) return undefined
-    if (treasury) {
-        try {
-            const ok = await supportsExecutionMode(bot.viem, { address: treasury })
-            if (ok) return treasury
-        } catch {
-            /* ignore */
-        }
+    if (!treasury) return undefined
+    try {
+        const ok = await supportsExecutionMode(bot.viem, { address: treasury })
+        return ok ? treasury : undefined
+    } catch {
+        return undefined
     }
-    return (gas ?? treasury)!
 }
 
 function filterOutBotRecipients(addrs: Address[]): Address[] {
@@ -101,8 +93,7 @@ async function checkBalance(creator: Address, totalNeeded: bigint): Promise<{ ok
 
 /**
  * Run distribution from the bot treasury using ERC-7821 execute().
- * Per Towns docs: "Execute multiple operations atomically" with transfer calls.
- * https://docs.towns.com/build/bots/onchain-integrations#batch-transactions
+ * Only treasury (bot.appAddress) is supported.
  */
 async function runBotDistribution(
     recipients: Address[],
@@ -113,12 +104,11 @@ async function runBotDistribution(
     const treasury = bot.appAddress as Address | undefined
     const account = (bot.viem as { account?: { address: Address } }).account
     if (!treasury || fromAddress.toLowerCase() !== treasury.toLowerCase() || !account) {
-        return { ok: false, error: 'Distribution only supported from bot treasury; fund bot.appAddress and use deposit flow.' }
+        return { ok: false, error: 'Distribution only supported from bot treasury (bot.appAddress).' }
     }
     try {
         const ok = await supportsExecutionMode(bot.viem, { address: treasury })
         if (!ok) return { ok: false, error: 'Treasury does not support ERC-7821 execute().' }
-
         const batches = chunkRecipients(recipients)
         for (const batch of batches) {
             const hash = await executeErc7821(bot.viem, {
@@ -135,10 +125,7 @@ async function runBotDistribution(
         }
         return { ok: true }
     } catch (e) {
-        return {
-            ok: false,
-            error: e instanceof Error ? e.message : String(e),
-        }
+        return { ok: false, error: e instanceof Error ? e.message : String(e) }
     }
 }
 
