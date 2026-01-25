@@ -1,8 +1,9 @@
 import { makeTownsBot } from '@towns-protocol/bot'
 import { readContract, waitForTransactionReceipt, writeContract } from 'viem/actions'
 import type { Address } from 'viem'
-import { erc20Abi } from 'viem'
-import { multicall3Abi } from 'viem'
+import { encodeFunctionData, erc20Abi, multicall3Abi } from 'viem'
+import { execute as executeErc7821 } from 'viem/experimental/erc7821'
+import { supportsExecutionMode } from 'viem/experimental/erc7821'
 import commands from './commands'
 import {
     TOWNS_ADDRESS,
@@ -42,8 +43,30 @@ type PendingDeposit = {
     creatorId: Address
     mode: 'fixed' | 'reaction'
     messageId?: string
+    /** Address that received the deposit (treasury or gas wallet); same as "from" in distribution. */
+    depositTarget: Address
 }
 const pendingDeposits = new Map<Address, PendingDeposit>()
+
+/**
+ * Resolve where creators should send TOWNS and where we distribute from.
+ * Treasury (bot.appAddress) = holds funds, used when ERC-7821 execute() is supported.
+ * Gas wallet (bot.botId) = signs txs, used as fallback when execute() is not supported.
+ */
+async function getBotDepositTarget(): Promise<Address | undefined> {
+    const treasury = bot.appAddress as Address | undefined
+    const gas = bot.botId as Address | undefined
+    if (!treasury && !gas) return undefined
+    if (treasury) {
+        try {
+            const ok = await supportsExecutionMode(bot.viem, { address: treasury })
+            if (ok) return treasury
+        } catch {
+            /* ignore */
+        }
+    }
+    return (gas ?? treasury)!
+}
 
 function filterOutBotRecipients(addrs: Address[]): Address[] {
     const a = (bot.appAddress ?? '').toLowerCase()
@@ -82,24 +105,62 @@ async function checkBalance(creator: Address, totalNeeded: bigint): Promise<{ ok
     return { ok: true }
 }
 
-/** Run distribution from bot wallet after creator deposited total to bot. */
+/**
+ * Run distribution from the wallet that holds the deposit (treasury or gas).
+ * - Treasury (bot.appAddress): use ERC-7821 execute() so gas wallet only signs, treasury pays.
+ * - Gas (bot.botId): use writeContract so gas wallet holds and signs.
+ */
 async function runBotDistribution(
     recipients: Address[],
     amountPer: bigint,
-    totalRaw: bigint
+    totalRaw: bigint,
+    fromAddress: Address
 ): Promise<{ ok: boolean; error?: string }> {
-    const from = bot.appAddress as Address | undefined
-    if (!from) return { ok: false, error: 'Bot has no app address' }
+    const treasury = bot.appAddress as Address | undefined
+    const account = (bot.viem as { account?: { address: Address } }).account
+    const batches = chunkRecipients(recipients)
     try {
+        if (treasury && fromAddress.toLowerCase() === treasury.toLowerCase() && account) {
+            const ok = await supportsExecutionMode(bot.viem, { address: treasury })
+            if (ok) {
+                await executeErc7821(bot.viem, {
+                    address: treasury,
+                    account: account as any,
+                    calls: [
+                        {
+                            to: TOWNS_ADDRESS as Address,
+                            data: encodeApprove(MULTICALL3_ADDRESS as Address, totalRaw),
+                        },
+                    ],
+                })
+                for (const batch of batches) {
+                    const aggCalls = buildAggregate3TransferFromCalls(fromAddress, batch, amountPer)
+                    await executeErc7821(bot.viem, {
+                        address: treasury,
+                        account: account as any,
+                        calls: [
+                            {
+                                to: MULTICALL3_ADDRESS as Address,
+                                data: encodeFunctionData({
+                                    abi: multicall3Abi,
+                                    functionName: 'aggregate3',
+                                    args: [aggCalls],
+                                }),
+                            },
+                        ],
+                    })
+                }
+                return { ok: true }
+            }
+        }
         await writeContract(bot.viem, {
             address: TOWNS_ADDRESS as Address,
             abi: erc20Abi,
             functionName: 'approve',
             args: [MULTICALL3_ADDRESS as Address, totalRaw],
         })
-        const batches = chunkRecipients(recipients)
         for (const batch of batches) {
-            const calls = buildAggregate3TransferFromCalls(from, batch, amountPer)
+            const calls = buildAggregate3TransferFromCalls(fromAddress, batch, amountPer)
             await writeContract(bot.viem, {
                 address: MULTICALL3_ADDRESS as Address,
                 abi: multicall3Abi,
@@ -302,7 +363,7 @@ bot.onReaction(async (handler, event) => {
             )
         }
         const amountPer = airdrop.totalRaw / BigInt(recipientAddresses.length)
-        const botAddr = bot.appAddress as `0x${string}` | undefined
+        const botAddr = (await getBotDepositTarget()) as `0x${string}` | undefined
         if (!botAddr) {
             await handler.sendMessage(
                 channelId,
@@ -325,6 +386,7 @@ bot.onReaction(async (handler, event) => {
             creatorId: airdrop.creatorId,
             mode: 'reaction',
             messageId: airdrop.airdropMessageId,
+            depositTarget: botAddr,
         })
         const depositData = encodeTransfer(botAddr, airdrop.totalRaw)
         await handler.sendInteractionRequest(
@@ -410,7 +472,7 @@ bot.onInteractionResponse(async (handler, event) => {
 
         const memberAddrs = pending.memberAddresses!
         const amountPer = pending.totalRaw / BigInt(memberAddrs.length)
-        const botAddr = bot.appAddress as `0x${string}` | undefined
+        const botAddr = (await getBotDepositTarget()) as `0x${string}` | undefined
         pendingDrops.delete(userId as `0x${string}`)
         if (!botAddr) {
             await handler.sendMessage(
@@ -433,6 +495,7 @@ bot.onInteractionResponse(async (handler, event) => {
             totalRaw: pending.totalRaw,
             creatorId: pending.creatorId,
             mode: 'fixed',
+            depositTarget: botAddr,
         })
         const depositData = encodeTransfer(botAddr, pending.totalRaw)
         await handler.sendInteractionRequest(
@@ -498,7 +561,12 @@ bot.onInteractionResponse(async (handler, event) => {
                 reactionAirdrops.delete(dep.messageId)
                 reactionAirdrops.delete(dep.threadId)
             }
-            const result = await runBotDistribution(dep.recipients, dep.amountPer, dep.totalRaw)
+            const result = await runBotDistribution(
+                dep.recipients,
+                dep.amountPer,
+                dep.totalRaw,
+                dep.depositTarget,
+            )
             if (!result.ok) {
                 await handler.sendMessage(
                     channelId,
