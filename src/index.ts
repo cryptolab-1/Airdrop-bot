@@ -7,22 +7,16 @@ import { supportsExecutionMode } from 'viem/experimental/erc7821'
 import commands from './commands'
 import {
     TOWNS_ADDRESS,
-    MULTICALL3_ADDRESS,
-    MAX_TRANSFERS_PER_BATCH,
     type AnyBot,
     type ReactionAirdrop,
     formatEther,
     parseEther,
     pendingDrops,
-    pendingCloseDistributes,
     reactionAirdrops,
     getChannelMemberIds,
     resolveMemberAddresses,
     encodeTransfer,
-    encodeApprove,
     chunkRecipients,
-    buildAggregate3TransferFromCalls,
-    encodeAggregate3TransferFrom,
     deleteReactionAirdrop,
     findReactionAirdrop,
     isJoinReaction,
@@ -106,70 +100,38 @@ async function checkBalance(creator: Address, totalNeeded: bigint): Promise<{ ok
 }
 
 /**
- * Run distribution from the wallet that holds the deposit (treasury or gas).
- * - Treasury (bot.appAddress): use ERC-7821 execute() so gas wallet only signs, treasury pays.
- * - Gas (bot.botId): use writeContract so gas wallet holds and signs.
+ * Run distribution from the bot treasury using ERC-7821 execute().
+ * Per Towns docs: "Execute multiple operations atomically" with transfer calls.
+ * https://docs.towns.com/build/bots/onchain-integrations#batch-transactions
  */
 async function runBotDistribution(
     recipients: Address[],
     amountPer: bigint,
-    totalRaw: bigint,
+    _totalRaw: bigint,
     fromAddress: Address
 ): Promise<{ ok: boolean; error?: string }> {
     const treasury = bot.appAddress as Address | undefined
     const account = (bot.viem as { account?: { address: Address } }).account
-    const batches = chunkRecipients(recipients)
+    if (!treasury || fromAddress.toLowerCase() !== treasury.toLowerCase() || !account) {
+        return { ok: false, error: 'Distribution only supported from bot treasury; fund bot.appAddress and use deposit flow.' }
+    }
     try {
-        if (treasury && fromAddress.toLowerCase() === treasury.toLowerCase() && account) {
-            const ok = await supportsExecutionMode(bot.viem, { address: treasury })
-            if (ok) {
-                const approveHash = await executeErc7821(bot.viem, {
-                    address: treasury,
-                    account: account as any,
-                    calls: [
-                        {
-                            to: TOWNS_ADDRESS as Address,
-                            data: encodeApprove(MULTICALL3_ADDRESS as Address, totalRaw),
-                        },
-                    ],
-                })
-                await waitForTransactionReceipt(bot.viem, { hash: approveHash as `0x${string}` })
-                for (const batch of batches) {
-                    const aggCalls = buildAggregate3TransferFromCalls(fromAddress, batch, amountPer)
-                    const batchHash = await executeErc7821(bot.viem, {
-                        address: treasury,
-                        account: account as any,
-                        calls: [
-                            {
-                                to: MULTICALL3_ADDRESS as Address,
-                                data: encodeFunctionData({
-                                    abi: multicall3Abi,
-                                    functionName: 'aggregate3',
-                                    args: [aggCalls],
-                                }),
-                            },
-                        ],
-                    })
-                    await waitForTransactionReceipt(bot.viem, { hash: batchHash as `0x${string}` })
-                }
-                return { ok: true }
-            }
-        }
-        const approveHash = await writeContract(bot.viem, {
-            address: TOWNS_ADDRESS as Address,
-            abi: erc20Abi,
-            functionName: 'approve',
-            args: [MULTICALL3_ADDRESS as Address, totalRaw],
-        })
-        await waitForTransactionReceipt(bot.viem, { hash: approveHash as `0x${string}` })
+        const ok = await supportsExecutionMode(bot.viem, { address: treasury })
+        if (!ok) return { ok: false, error: 'Treasury does not support ERC-7821 execute().' }
+
+        const batches = chunkRecipients(recipients)
         for (const batch of batches) {
-            const calls = buildAggregate3TransferFromCalls(fromAddress, batch, amountPer)
-            await writeContract(bot.viem, {
-                address: MULTICALL3_ADDRESS as Address,
-                abi: multicall3Abi,
-                functionName: 'aggregate3',
-                args: [calls],
+            const hash = await executeErc7821(bot.viem, {
+                address: treasury,
+                account: account as any,
+                calls: batch.map((to) => ({
+                    to: TOWNS_ADDRESS as Address,
+                    abi: erc20Abi,
+                    functionName: 'transfer',
+                    args: [to, amountPer],
+                })),
             })
+            await waitForTransactionReceipt(bot.viem, { hash: hash as `0x${string}` })
         }
         return { ok: true }
     } catch (e) {
@@ -329,11 +291,11 @@ bot.onReaction(async (handler, event) => {
     }
     if (isLaunchReaction(reaction) && airdrop && airdrop.creatorId.toLowerCase() === userId.toLowerCase()) {
         // Check if already in progress
-        const existing = pendingCloseDistributes.get(userId as `0x${string}`)
-        if (existing && existing.messageId === airdrop.airdropMessageId) {
+        const existingDep = pendingDeposits.get(userId as `0x${string}`)
+        if (existingDep && existingDep.messageId === airdrop.airdropMessageId) {
             await handler.sendMessage(
                 channelId,
-                'Airdrop distribution already in progress. Wait for current batch to complete.',
+                'Airdrop distribution already in progress. Wait for the current tx to complete.',
                 { threadId: airdrop.threadId, mentions: [{ userId: airdrop.creatorId, displayName: 'Creator' }] },
             )
             return
@@ -366,37 +328,44 @@ bot.onReaction(async (handler, event) => {
             )
         }
         const amountPer = airdrop.totalRaw / BigInt(recipientAddresses.length)
-        const batches = chunkRecipients(recipientAddresses)
-        const creatorWallet = airdrop.creatorId as `0x${string}`
+        const botAddr = (await getBotDepositTarget()) as `0x${string}` | undefined
+        if (!botAddr) {
+            await handler.sendMessage(
+                channelId,
+                'Bot is not configured for airdrops. Contact support.',
+                { threadId, mentions: [{ userId: airdrop.creatorId, displayName: 'Creator' }] },
+            )
+            return
+        }
         await handler.sendMessage(
             channelId,
-            `Distributing to **${recipientAddresses.length}** recipients. Sign **Approve** for Multicall3 to use your $TOWNS, then sign each batch.`,
+            `Distributing to **${recipientAddresses.length}** recipients. Sign **once** to send **${formatEther(airdrop.totalRaw)} $TOWNS** to the bot; the bot will then distribute to everyone.`,
             { threadId, mentions: [{ userId: airdrop.creatorId, displayName: 'Creator' }] },
         )
-        pendingCloseDistributes.set(userId as `0x${string}`, {
+        pendingDeposits.set(userId as `0x${string}`, {
+            channelId,
+            threadId,
             recipients: recipientAddresses,
             amountPer,
-            channelId,
+            totalRaw: airdrop.totalRaw,
+            creatorId: airdrop.creatorId,
+            mode: 'reaction',
             messageId: airdrop.airdropMessageId,
-            creatorId: airdrop.creatorId as Address,
-            creatorWallet,
-            batches,
-            batchIndex: -1,
-            threadId,
+            depositTarget: botAddr,
         })
-        const approveData = encodeApprove(MULTICALL3_ADDRESS as Address, airdrop.totalRaw)
+        const transferData = encodeTransfer(botAddr, airdrop.totalRaw)
         await handler.sendInteractionRequest(
             channelId,
             {
                 type: 'transaction',
-                id: `drop-close-approve-${Date.now()}`,
-                title: 'Approve $TOWNS for distribution',
-                subtitle: `Approve ${formatEther(airdrop.totalRaw)} $TOWNS for Multicall3`,
+                id: `drop-deposit-react-${Date.now()}`,
+                title: 'Send $TOWNS to bot',
+                subtitle: `Transfer ${formatEther(airdrop.totalRaw)} $TOWNS to the airdrop bot`,
                 tx: {
                     chainId: '8453',
                     to: TOWNS_ADDRESS as `0x${string}`,
                     value: '0',
-                    data: approveData,
+                    data: transferData,
                 },
                 recipient: userId as `0x${string}`,
             },
@@ -468,29 +437,44 @@ bot.onInteractionResponse(async (handler, event) => {
 
         const memberAddrs = pending.memberAddresses!
         const amountPer = pending.totalRaw / BigInt(memberAddrs.length)
-        pending.creatorWallet = userId as `0x${string}`
-        pending.batches = chunkRecipients(memberAddrs)
-        pending.batchIndex = -1
-        pending.threadId = threadId
-        pending.amountPer = amountPer
+        const botAddr = (await getBotDepositTarget()) as `0x${string}` | undefined
+        pendingDrops.delete(userId as `0x${string}`)
+        if (!botAddr) {
+            await handler.sendMessage(
+                channelId,
+                'Bot is not configured for airdrops. Contact support.',
+                { threadId, mentions: [{ userId, displayName: 'Creator' }] },
+            )
+            return
+        }
         await handler.sendMessage(
             channelId,
-            `Distributing to **${memberAddrs.length}** members. Sign **Approve** for Multicall3 to use your $TOWNS, then sign each batch.`,
+            `Distributing to **${memberAddrs.length}** members. Sign **once** to send **${formatEther(pending.totalRaw)} $TOWNS** to the bot; the bot will then distribute to everyone.`,
             { threadId, mentions: [{ userId, displayName: 'Creator' }] },
         )
-        const approveData = encodeApprove(MULTICALL3_ADDRESS as Address, pending.totalRaw)
+        pendingDeposits.set(userId as `0x${string}`, {
+            channelId,
+            threadId,
+            recipients: memberAddrs,
+            amountPer,
+            totalRaw: pending.totalRaw,
+            creatorId: pending.creatorId,
+            mode: 'fixed',
+            depositTarget: botAddr,
+        })
+        const transferData = encodeTransfer(botAddr, pending.totalRaw)
         await handler.sendInteractionRequest(
             channelId,
             {
                 type: 'transaction',
-                id: `drop-fixed-approve-${Date.now()}`,
-                title: 'Approve $TOWNS for distribution',
-                subtitle: `Approve ${formatEther(pending.totalRaw)} $TOWNS for Multicall3`,
+                id: `drop-deposit-fixed-${Date.now()}`,
+                title: 'Send $TOWNS to bot',
+                subtitle: `Transfer ${formatEther(pending.totalRaw)} $TOWNS to the airdrop bot`,
                 tx: {
                     chainId: '8453',
                     to: TOWNS_ADDRESS as `0x${string}`,
                     value: '0',
-                    data: approveData,
+                    data: transferData,
                 },
                 recipient: userId as `0x${string}`,
             },
@@ -564,199 +548,6 @@ bot.onInteractionResponse(async (handler, event) => {
             return
         }
 
-        const closeDist = pendingCloseDistributes.get(uid)
-        if (closeDist) {
-            const threadId = closeDist.threadId
-            if (tx.error) {
-                pendingCloseDistributes.delete(uid)
-                await handler.sendMessage(
-                    channelId,
-                    `Transaction rejected: ${tx.error}. Airdrop still open; react ${LAUNCH_EMOJI} again to retry.`,
-                    { threadId, mentions: [{ userId: closeDist.creatorId, displayName: 'Creator' }] },
-                )
-                return
-            }
-            if (!tx.txHash) {
-                // Transaction submitted but hash not yet available - wait for next response with hash
-                return
-            }
-            let receipt: { status: string }
-            try {
-                receipt = await waitForTransactionReceipt(bot.viem, { hash: tx.txHash as `0x${string}` })
-            } catch (e) {
-                pendingCloseDistributes.delete(uid)
-                const txLink = tx.txHash ? ` [View tx](https://basescan.org/tx/${tx.txHash})` : ''
-                await handler.sendMessage(
-                    channelId,
-                    `Failed to verify tx: ${e instanceof Error ? e.message : String(e)}.${txLink} React ${LAUNCH_EMOJI} again to retry.`,
-                    { threadId, mentions: [{ userId: closeDist.creatorId, displayName: 'Creator' }] },
-                )
-                return
-            }
-            if (receipt.status !== 'success') {
-                pendingCloseDistributes.delete(uid)
-                const txLink = `https://basescan.org/tx/${tx.txHash}`
-                const step =
-                    closeDist.batchIndex === -1
-                        ? 'Approve failed on-chain'
-                        : `Batch ${closeDist.batchIndex + 1}/${closeDist.batches.length} failed on-chain`
-                const hint =
-                    closeDist.batchIndex === -1
-                        ? ' Check you have enough $TOWNS and try again.'
-                        : ' You can react 🚀 again to retry from approve.'
-                await handler.sendMessage(
-                    channelId,
-                    `${step}. Airdrop not closed. [View tx](${txLink}).${hint}`,
-                    { threadId, mentions: [{ userId: closeDist.creatorId, displayName: 'Creator' }] },
-                )
-                return
-            }
-            
-            // -1 = approve just done → go to 0; else next batch
-            if (closeDist.batchIndex === -1) {
-                closeDist.batchIndex = 0
-            } else {
-                closeDist.batchIndex += 1
-            }
-            
-            if (closeDist.batchIndex >= closeDist.batches.length) {
-                // All batches complete
-                pendingCloseDistributes.delete(uid)
-                reactionAirdrops.delete(closeDist.messageId)
-                reactionAirdrops.delete(closeDist.threadId)
-                await handler.sendMessage(
-                    channelId,
-                    `Airdrop closed. **${closeDist.recipients.length}** recipients received **${formatEther(closeDist.amountPer)} $TOWNS** each from your wallet.`,
-                    { threadId, mentions: [{ userId: closeDist.creatorId, displayName: 'Creator' }] },
-                )
-                return
-            }
-            
-            // Send next batch (transferFrom(creator, to, amount))
-            const nextBatch = closeDist.batches[closeDist.batchIndex]!
-            const data = encodeAggregate3TransferFrom(closeDist.creatorWallet, nextBatch, closeDist.amountPer)
-            await handler.sendInteractionRequest(
-                channelId,
-                {
-                    type: 'transaction',
-                    id: `drop-close-batch-${Date.now()}-${closeDist.batchIndex}`,
-                    title: 'Distribute $TOWNS (batch)',
-                    subtitle: `Batch ${closeDist.batchIndex + 1}/${closeDist.batches.length} (${nextBatch.length} transfers)`,
-                    tx: {
-                        chainId: '8453',
-                        to: MULTICALL3_ADDRESS as `0x${string}`,
-                        value: '0',
-                        data,
-                    },
-                    recipient: uid,
-                },
-                { threadId },
-            )
-            await handler.sendMessage(
-                channelId,
-                `Sign batch ${closeDist.batchIndex + 1}/${closeDist.batches.length} (${nextBatch.length} transfers, ${formatEther(closeDist.amountPer)} $TOWNS each)`,
-                { threadId, mentions: [{ userId: closeDist.creatorId, displayName: 'Creator' }] },
-            )
-            return
-        }
-
-        const pending = pendingDrops.get(uid)
-        if (!pending) return
-        const threadId = pending.threadId
-        
-        if (tx.error) {
-            pendingDrops.delete(uid)
-            await handler.sendMessage(
-                channelId,
-                `Transaction rejected: ${tx.error}`,
-                { threadId, mentions: [{ userId, displayName: 'Creator' }] },
-            )
-            return
-        }
-        if (!tx.txHash) {
-            // Transaction submitted but hash not yet available - the handler will be called again with the hash
-            // Don't return early - wait for the next call with txHash
-            return
-        }
-        let receipt: { status: string }
-        try {
-            receipt = await waitForTransactionReceipt(bot.viem, { hash: tx.txHash as `0x${string}` })
-        } catch (e) {
-            pendingDrops.delete(uid)
-            const txLink = tx.txHash ? ` [View tx](https://basescan.org/tx/${tx.txHash})` : ''
-            await handler.sendMessage(
-                channelId,
-                `Failed to verify transaction: ${e instanceof Error ? e.message : String(e)}.${txLink}`,
-                { threadId },
-            )
-            return
-        }
-        if (receipt.status !== 'success') {
-            pendingDrops.delete(uid)
-            const txLink = `https://basescan.org/tx/${tx.txHash}`
-            const batchIdx = pending.batchIndex ?? -1
-            const step =
-                batchIdx === -1
-                    ? 'Approve failed on-chain'
-                    : `Batch ${batchIdx + 1}/${(pending.batches ?? []).length} failed on-chain`
-            const hint =
-                batchIdx === -1
-                    ? ' Check you have enough $TOWNS and try the flow again.'
-                    : ' Run /drop again to retry from the start.'
-            await handler.sendMessage(
-                channelId,
-                `${step}. [View tx](${txLink}).${hint}`,
-                { threadId, mentions: [{ userId: pending.creatorId, displayName: 'Creator' }] },
-            )
-            return
-        }
-
-        // -1 = approve just done → go to 0; else next batch
-        if (pending.batchIndex === -1) {
-            pending.batchIndex = 0
-        } else {
-            pending.batchIndex = (pending.batchIndex ?? 0) + 1
-        }
-        const batches = pending.batches!
-        const amountPer = pending.amountPer!
-        
-        if (pending.batchIndex >= batches.length) {
-            // All batches complete
-            pendingDrops.delete(uid)
-            const n = pending.memberAddresses!.length
-            await handler.sendMessage(
-                channelId,
-                `Airdrop done. **${n}** members received **${formatEther(amountPer)} $TOWNS** each from your wallet.`,
-                { threadId },
-            )
-            return
-        }
-        
-        // Send next batch (transferFrom(creator, to, amount))
-        const nextBatch = batches[pending.batchIndex]!
-        const data = encodeAggregate3TransferFrom(pending.creatorWallet!, nextBatch, amountPer)
-        await handler.sendInteractionRequest(
-            channelId,
-            {
-                type: 'transaction',
-                id: `drop-fixed-batch-${Date.now()}-${pending.batchIndex}`,
-                title: 'Distribute $TOWNS (batch)',
-                subtitle: `Batch ${pending.batchIndex + 1}/${batches.length} (${nextBatch.length} transfers)`,
-                tx: {
-                    chainId: '8453',
-                    to: MULTICALL3_ADDRESS as `0x${string}`,
-                    value: '0',
-                    data,
-                },
-                recipient: uid,
-            },
-            { threadId },
-        )
-        await handler.sendMessage(
-            channelId,
-            `Sign batch ${pending.batchIndex + 1}/${batches.length} (${nextBatch.length} transfers, ${formatEther(amountPer)} $TOWNS each)`,
-            { threadId, mentions: [{ userId, displayName: 'Creator' }] },
-        )
     }
 })
 

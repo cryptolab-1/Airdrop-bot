@@ -238,5 +238,28 @@ export function encodeAggregate3TransferFrom(
     })
 }
 
+/**
+ * Encode one Multicall3 call that does approve(Multicall3, totalRaw) then transferFrom(creator, to, amountPer) for each recipient in firstBatch.
+ * Used as the first user tx so the client never sees a standalone "approve" that it might render as "send tokens".
+ * Target is MULTICALL3_ADDRESS; calldata is aggregate3([approve, ...transferFroms]).
+ */
+export function encodeAggregate3ApproveAndFirstBatch(
+    creator: Address,
+    totalRaw: bigint,
+    firstBatch: Address[],
+    amountPer: bigint
+): `0x${string}` {
+    const approveCall = {
+        target: TOWNS_ADDRESS as Address,
+        allowFailure: false as const,
+        callData: encodeApprove(MULTICALL3_ADDRESS as Address, totalRaw),
+    }
+    const transferCalls = buildAggregate3TransferFromCalls(creator, firstBatch, amountPer)
+    return encodeFunctionData({
+        abi: multicall3Abi,
+        functionName: 'aggregate3',
+        args: [[approveCall, ...transferCalls]],
+    })
+}
 
 export { parseEther, formatEther }
