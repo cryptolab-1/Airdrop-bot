@@ -208,6 +208,19 @@ export function chunkRecipients(recipients: Address[]): Address[][] {
     return out
 }
 
+/** Build Multicall3 aggregate3 calls for transferFrom(creator, to, amountPer). */
+export function buildAggregate3TransferFromCalls(
+    creator: Address,
+    recipients: Address[],
+    amountPer: bigint
+): Array<{ target: Address; allowFailure: false; callData: `0x${string}` }> {
+    return recipients.map((to) => ({
+        target: TOWNS_ADDRESS as Address,
+        allowFailure: false as const,
+        callData: encodeTransferFrom(creator, to, amountPer),
+    }))
+}
+
 /**
  * Encode Multicall3 aggregate3(calls) for a batch of transferFrom(creator, recipient, amountPer).
  * Creator must have approved MULTICALL3_ADDRESS for the total amount.
@@ -217,16 +230,13 @@ export function encodeAggregate3TransferFrom(
     recipients: Address[],
     amountPer: bigint
 ): `0x${string}` {
-    const calls = recipients.map((to) => ({
-        target: TOWNS_ADDRESS as Address,
-        allowFailure: false as const,
-        callData: encodeTransferFrom(creator, to, amountPer),
-    }))
+    const calls = buildAggregate3TransferFromCalls(creator, recipients, amountPer)
     return encodeFunctionData({
         abi: multicall3Abi,
         functionName: 'aggregate3',
         args: [calls],
     })
 }
+
 
 export { parseEther, formatEther }

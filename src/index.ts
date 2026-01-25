@@ -1,7 +1,8 @@
 import { makeTownsBot } from '@towns-protocol/bot'
-import { call, readContract, waitForTransactionReceipt } from 'viem/actions'
+import { readContract, waitForTransactionReceipt, writeContract } from 'viem/actions'
 import type { Address } from 'viem'
 import { erc20Abi } from 'viem'
+import { multicall3Abi } from 'viem'
 import commands from './commands'
 import {
     TOWNS_ADDRESS,
@@ -16,8 +17,10 @@ import {
     reactionAirdrops,
     getChannelMemberIds,
     resolveMemberAddresses,
+    encodeTransfer,
     encodeApprove,
     chunkRecipients,
+    buildAggregate3TransferFromCalls,
     encodeAggregate3TransferFrom,
     deleteReactionAirdrop,
     findReactionAirdrop,
@@ -28,6 +31,19 @@ import {
 const bot = await makeTownsBot(process.env.APP_PRIVATE_DATA!, process.env.JWT_SECRET!, {
     commands,
 })
+
+/** Pending deposit: creator sent total to bot; we run distribution from bot. */
+type PendingDeposit = {
+    channelId: string
+    threadId: string
+    recipients: Address[]
+    amountPer: bigint
+    totalRaw: bigint
+    creatorId: Address
+    mode: 'fixed' | 'reaction'
+    messageId?: string
+}
+const pendingDeposits = new Map<Address, PendingDeposit>()
 
 function filterOutBotRecipients(addrs: Address[]): Address[] {
     const a = (bot.appAddress ?? '').toLowerCase()
@@ -66,13 +82,47 @@ async function checkBalance(creator: Address, totalNeeded: bigint): Promise<{ ok
     return { ok: true }
 }
 
+/** Run distribution from bot wallet after creator deposited total to bot. */
+async function runBotDistribution(
+    recipients: Address[],
+    amountPer: bigint,
+    totalRaw: bigint
+): Promise<{ ok: boolean; error?: string }> {
+    const from = bot.appAddress as Address | undefined
+    if (!from) return { ok: false, error: 'Bot has no app address' }
+    try {
+        await writeContract(bot.viem, {
+            address: TOWNS_ADDRESS as Address,
+            abi: erc20Abi,
+            functionName: 'approve',
+            args: [MULTICALL3_ADDRESS as Address, totalRaw],
+        })
+        const batches = chunkRecipients(recipients)
+        for (const batch of batches) {
+            const calls = buildAggregate3TransferFromCalls(from, batch, amountPer)
+            await writeContract(bot.viem, {
+                address: MULTICALL3_ADDRESS as Address,
+                abi: multicall3Abi,
+                functionName: 'aggregate3',
+                args: [calls],
+            })
+        }
+        return { ok: true }
+    } catch (e) {
+        return {
+            ok: false,
+            error: e instanceof Error ? e.message : String(e),
+        }
+    }
+}
+
 bot.onSlashCommand('help', async (handler, { channelId }) => {
     await handler.sendMessage(
         channelId,
         '**Available Commands:**\n\n' +
             '• `/help` - Show this help message\n\n' +
-            '• `/drop <amount>` - Airdrop total $TOWNS split among all channel members\n\n' +
-            '• `/drop react <amount>` - Airdrop $TOWNS split among users who react 💸 to join; creator reacts ❌ to cancel, 🚀 to launch',
+            '• `/drop <amount>` - Airdrop total $TOWNS split among all channel members. You sign **once** to send the total to the bot; the bot distributes to everyone.\n\n' +
+            '• `/drop react <amount>` - Airdrop $TOWNS split among users who react 💸 to join; creator reacts ❌ to cancel, 🚀 to launch. Same: sign once to send to the bot, then the bot distributes.',
     )
 })
 
@@ -251,62 +301,48 @@ bot.onReaction(async (handler, event) => {
                 { threadId, mentions: [{ userId: airdrop.creatorId, displayName: 'Creator' }] },
             )
         }
-        // Use creatorId as source: same address must sign approve and be 'from' in transferFrom
         const amountPer = airdrop.totalRaw / BigInt(recipientAddresses.length)
-        
-        // Check balance first (creatorId = signer of approve tx)
-        const balanceCheck = await checkBalance(airdrop.creatorId, airdrop.totalRaw)
-        if (!balanceCheck.ok) {
+        const botAddr = bot.appAddress as `0x${string}` | undefined
+        if (!botAddr) {
             await handler.sendMessage(
                 channelId,
-                `Cannot distribute: ${balanceCheck.reason}`,
+                'Bot is not configured for airdrops. Contact support.',
                 { threadId, mentions: [{ userId: airdrop.creatorId, displayName: 'Creator' }] },
             )
             return
         }
-        
-        const batches = chunkRecipients(recipientAddresses)
         await handler.sendMessage(
             channelId,
-            `Distributing to **${recipientAddresses.length}** recipients. Sign **approve** once, then **${batches.length}** batch tx(s) (up to ${MAX_TRANSFERS_PER_BATCH} transfers per tx).`,
+            `Distributing to **${recipientAddresses.length}** recipients. Sign **once** to send **${formatEther(airdrop.totalRaw)} $TOWNS** to the bot; the bot will then distribute to everyone.`,
             { threadId, mentions: [{ userId: airdrop.creatorId, displayName: 'Creator' }] },
         )
-        
-        pendingCloseDistributes.set(userId as `0x${string}`, {
+        pendingDeposits.set(userId as `0x${string}`, {
+            channelId,
+            threadId,
             recipients: recipientAddresses,
             amountPer,
-            channelId,
-            messageId: airdrop.airdropMessageId,
+            totalRaw: airdrop.totalRaw,
             creatorId: airdrop.creatorId,
-            creatorWallet: airdrop.creatorId,
-            batches,
-            batchIndex: -1,
-            threadId,
+            mode: 'reaction',
+            messageId: airdrop.airdropMessageId,
         })
-        
-        // Send approve tx first
-        const approveData = encodeApprove(MULTICALL3_ADDRESS as Address, airdrop.totalRaw)
+        const depositData = encodeTransfer(botAddr, airdrop.totalRaw)
         await handler.sendInteractionRequest(
             channelId,
             {
                 type: 'transaction',
-                id: `drop-close-approve-${Date.now()}`,
-                title: 'Approve $TOWNS',
-                subtitle: `Approve ${formatEther(airdrop.totalRaw)} $TOWNS for Multicall3`,
+                id: `drop-deposit-react-${Date.now()}`,
+                title: 'Send $TOWNS to bot',
+                subtitle: `Send ${formatEther(airdrop.totalRaw)} $TOWNS to the airdrop bot`,
                 tx: {
                     chainId: '8453',
                     to: TOWNS_ADDRESS as `0x${string}`,
                     value: '0',
-                    data: approveData,
+                    data: depositData,
                 },
                 recipient: userId as `0x${string}`,
             },
             { threadId, replyId: event.eventId },
-        )
-        await handler.sendMessage(
-            channelId,
-            `Sign **approve** first, then batch tx(s).`,
-            { threadId, mentions: [{ userId: airdrop.creatorId, displayName: 'Creator' }] },
         )
         return
     }
@@ -338,8 +374,6 @@ bot.onInteractionResponse(async (handler, event) => {
             }
         }
         if (!confirmed) return
-        // Use userId as source: same address signs approve and is 'from' in transferFrom
-        const creatorWallet = userId as `0x${string}`
 
         const { eventId: threadRootId } = await handler.sendMessage(
             channelId,
@@ -376,55 +410,47 @@ bot.onInteractionResponse(async (handler, event) => {
 
         const memberAddrs = pending.memberAddresses!
         const amountPer = pending.totalRaw / BigInt(memberAddrs.length)
-        pending.creatorWallet = creatorWallet
-        pending.amountPer = amountPer
-        const batches = chunkRecipients(memberAddrs)
-        pending.batches = batches
-        pending.batchIndex = -1
-        pending.threadId = threadId
-        
-        // Check balance first
-        const balanceCheck = await checkBalance(creatorWallet, pending.totalRaw)
-        if (!balanceCheck.ok) {
-            pendingDrops.delete(userId as `0x${string}`)
+        const botAddr = bot.appAddress as `0x${string}` | undefined
+        pendingDrops.delete(userId as `0x${string}`)
+        if (!botAddr) {
             await handler.sendMessage(
                 channelId,
-                `Cannot distribute: ${balanceCheck.reason}`,
+                'Bot is not configured for airdrops. Contact support.',
                 { threadId, mentions: [{ userId, displayName: 'Creator' }] },
             )
             return
         }
-        
-        const addrCount = memberAddrs.length
         await handler.sendMessage(
             channelId,
-            `Distributing to **${addrCount}** members. Sign **approve** once, then **${batches.length}** batch tx(s) (up to ${MAX_TRANSFERS_PER_BATCH} transfers per tx).`,
+            `Distributing to **${memberAddrs.length}** members. Sign **once** to send **${formatEther(pending.totalRaw)} $TOWNS** to the bot; the bot will then distribute to everyone.`,
             { threadId, mentions: [{ userId, displayName: 'Creator' }] },
         )
-        
-        // Send approve tx first
-        const approveData = encodeApprove(MULTICALL3_ADDRESS as Address, pending.totalRaw)
+        pendingDeposits.set(userId as `0x${string}`, {
+            channelId,
+            threadId,
+            recipients: memberAddrs,
+            amountPer,
+            totalRaw: pending.totalRaw,
+            creatorId: pending.creatorId,
+            mode: 'fixed',
+        })
+        const depositData = encodeTransfer(botAddr, pending.totalRaw)
         await handler.sendInteractionRequest(
             channelId,
             {
                 type: 'transaction',
-                id: `drop-fixed-approve-${Date.now()}`,
-                title: 'Approve $TOWNS',
-                subtitle: `Approve ${formatEther(pending.totalRaw)} $TOWNS for Multicall3`,
+                id: `drop-deposit-fixed-${Date.now()}`,
+                title: 'Send $TOWNS to bot',
+                subtitle: `Send ${formatEther(pending.totalRaw)} $TOWNS to the airdrop bot`,
                 tx: {
                     chainId: '8453',
                     to: TOWNS_ADDRESS as `0x${string}`,
                     value: '0',
-                    data: approveData,
+                    data: depositData,
                 },
                 recipient: userId as `0x${string}`,
             },
             { threadId },
-        )
-        await handler.sendMessage(
-            channelId,
-            `Sign **approve** first, then batch tx(s).`,
-            { threadId, mentions: [{ userId, displayName: 'Creator' }] },
         )
         return
     }
@@ -432,6 +458,62 @@ bot.onInteractionResponse(async (handler, event) => {
     if (pl?.case === 'transaction') {
         const tx = pl.value as { requestId?: string; id?: string; txHash?: string; error?: string }
         const uid = userId as `0x${string}`
+
+        const dep = pendingDeposits.get(uid)
+        if (dep) {
+            const threadId = dep.threadId
+            if (tx.error) {
+                pendingDeposits.delete(uid)
+                await handler.sendMessage(
+                    channelId,
+                    `Transaction rejected: ${tx.error}. You can try again.`,
+                    { threadId, mentions: [{ userId: dep.creatorId, displayName: 'Creator' }] },
+                )
+                return
+            }
+            if (!tx.txHash) return
+            let receipt: { status: string }
+            try {
+                receipt = await waitForTransactionReceipt(bot.viem, { hash: tx.txHash as `0x${string}` })
+            } catch (e) {
+                pendingDeposits.delete(uid)
+                await handler.sendMessage(
+                    channelId,
+                    `Failed to verify tx: ${e instanceof Error ? e.message : String(e)}.`,
+                    { threadId, mentions: [{ userId: dep.creatorId, displayName: 'Creator' }] },
+                )
+                return
+            }
+            if (receipt.status !== 'success') {
+                pendingDeposits.delete(uid)
+                await handler.sendMessage(
+                    channelId,
+                    `Deposit tx failed on-chain. [View tx](https://basescan.org/tx/${tx.txHash})`,
+                    { threadId, mentions: [{ userId: dep.creatorId, displayName: 'Creator' }] },
+                )
+                return
+            }
+            pendingDeposits.delete(uid)
+            if (dep.mode === 'reaction' && dep.messageId) {
+                reactionAirdrops.delete(dep.messageId)
+                reactionAirdrops.delete(dep.threadId)
+            }
+            const result = await runBotDistribution(dep.recipients, dep.amountPer, dep.totalRaw)
+            if (!result.ok) {
+                await handler.sendMessage(
+                    channelId,
+                    `Deposit received but distribution failed: ${result.error}. Contact support — your ${formatEther(dep.totalRaw)} $TOWNS are in the bot.`,
+                    { threadId, mentions: [{ userId: dep.creatorId, displayName: 'Creator' }] },
+                )
+                return
+            }
+            await handler.sendMessage(
+                channelId,
+                `Airdrop done. **${dep.recipients.length}** recipients received **${formatEther(dep.amountPer)} $TOWNS** each.`,
+                { threadId, mentions: [{ userId: dep.creatorId, displayName: 'Creator' }] },
+            )
+            return
+        }
 
         const closeDist = pendingCloseDistributes.get(uid)
         if (closeDist) {
