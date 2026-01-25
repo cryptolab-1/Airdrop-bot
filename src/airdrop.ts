@@ -161,6 +161,35 @@ export async function resolveMemberAddresses(
 }
 
 /**
+ * Return only Towns wallet addresses when the same person appears as both
+ * Towns wallet and linked smart account. getSmartAccountFromUserId(wallet) returns
+ * the smart account; we keep the wallet and drop the smart account when both are
+ * in the list so each person receives once at their Towns wallet.
+ */
+export async function uniqueTownsWallets(
+    bot: AnyBot,
+    userIds: string[]
+): Promise<Address[]> {
+    if (userIds.length === 0) return []
+    const resolved = new Map<string, string>()
+    for (const uid of userIds) {
+        const addr = await getSmartAccountFromUserId(bot as Bot<BotCommand[]>, {
+            userId: uid as Address,
+        })
+        resolved.set(uid.toLowerCase(), ((addr ?? uid) as string).toLowerCase())
+    }
+    const out: Address[] = []
+    for (const uid of userIds) {
+        const u = uid.toLowerCase()
+        const isSmartAccountOfAnother = [...resolved.entries()].some(
+            ([id, val]) => id !== u && val === u
+        )
+        if (!isSmartAccountOfAnother) out.push(uid as Address)
+    }
+    return out
+}
+
+/**
  * Encode ERC20 transfer(to, amount). Direct transfer from sender's wallet.
  */
 export function encodeTransfer(to: Address, amountRaw: bigint): `0x${string}` {

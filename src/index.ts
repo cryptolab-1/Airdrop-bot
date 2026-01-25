@@ -20,6 +20,7 @@ import {
     findReactionAirdrop,
     isJoinReaction,
     joinEmoji,
+    uniqueTownsWallets,
 } from './airdrop'
 
 const bot = await makeTownsBot(process.env.APP_PRIVATE_DATA!, process.env.JWT_SECRET!, {
@@ -159,7 +160,7 @@ bot.onSlashCommand('drop', async (handler, event) => {
 
     if (!isReact) {
         const userIds = await getChannelMemberIds(bot as AnyBot, channelId)
-        // Exclude only bot so creator can test in empty town (creator included)
+        // Exclude bot and dedupe: keep Towns wallet when same person appears as wallet + linked account
         const filteredUserIds = userIds.filter((uid) => {
             const w = uid.toLowerCase()
             const a = (bot.appAddress ?? '').toLowerCase()
@@ -173,8 +174,8 @@ bot.onSlashCommand('drop', async (handler, event) => {
             )
             return
         }
-        // Use Towns wallet (userId) as address; do not resolve to linked smart account
-        let memberAddresses = filterOutBotRecipients(filteredUserIds.map((u) => u as Address))
+        let memberAddresses = await uniqueTownsWallets(bot as AnyBot, filteredUserIds)
+        memberAddresses = filterOutBotRecipients(memberAddresses)
         if (memberAddresses.length === 0) {
             await handler.sendMessage(
                 channelId,
@@ -290,8 +291,9 @@ bot.onReaction(async (handler, event) => {
             )
             return
         }
-        // Use Towns wallet (userId) as address; do not resolve to linked smart account
-        let recipientAddresses = filterOutBotRecipients(reactors.map((r) => r as Address))
+        // Dedupe: keep Towns wallet when same person appears as wallet + linked account
+        let recipientAddresses = await uniqueTownsWallets(bot as AnyBot, reactors)
+        recipientAddresses = filterOutBotRecipients(recipientAddresses)
         if (recipientAddresses.length === 0) {
             await handler.sendMessage(channelId, 'No reactors to distribute to (or only bot).', {
                 threadId,
