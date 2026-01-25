@@ -136,7 +136,7 @@ async function runBotDistribution(
                 await waitForTransactionReceipt(bot.viem, { hash: approveHash as `0x${string}` })
                 for (const batch of batches) {
                     const aggCalls = buildAggregate3TransferFromCalls(fromAddress, batch, amountPer)
-                    await executeErc7821(bot.viem, {
+                    const batchHash = await executeErc7821(bot.viem, {
                         address: treasury,
                         account: account as any,
                         calls: [
@@ -150,6 +150,7 @@ async function runBotDistribution(
                             },
                         ],
                     })
+                    await waitForTransactionReceipt(bot.viem, { hash: batchHash as `0x${string}` })
                 }
                 return { ok: true }
             }
@@ -365,44 +366,37 @@ bot.onReaction(async (handler, event) => {
             )
         }
         const amountPer = airdrop.totalRaw / BigInt(recipientAddresses.length)
-        const botAddr = (await getBotDepositTarget()) as `0x${string}` | undefined
-        if (!botAddr) {
-            await handler.sendMessage(
-                channelId,
-                'Bot is not configured for airdrops. Contact support.',
-                { threadId, mentions: [{ userId: airdrop.creatorId, displayName: 'Creator' }] },
-            )
-            return
-        }
+        const batches = chunkRecipients(recipientAddresses)
+        const creatorWallet = airdrop.creatorId as `0x${string}`
         await handler.sendMessage(
             channelId,
-            `Distributing to **${recipientAddresses.length}** recipients. Sign **once** to send **${formatEther(airdrop.totalRaw)} $TOWNS** to the bot; the bot will then distribute to everyone.`,
+            `Distributing to **${recipientAddresses.length}** recipients. Sign **Approve** for Multicall3 to use your $TOWNS, then sign each batch.`,
             { threadId, mentions: [{ userId: airdrop.creatorId, displayName: 'Creator' }] },
         )
-        pendingDeposits.set(userId as `0x${string}`, {
-            channelId,
-            threadId,
+        pendingCloseDistributes.set(userId as `0x${string}`, {
             recipients: recipientAddresses,
             amountPer,
-            totalRaw: airdrop.totalRaw,
-            creatorId: airdrop.creatorId,
-            mode: 'reaction',
+            channelId,
             messageId: airdrop.airdropMessageId,
-            depositTarget: botAddr,
+            creatorId: airdrop.creatorId as Address,
+            creatorWallet,
+            batches,
+            batchIndex: -1,
+            threadId,
         })
-        const depositData = encodeTransfer(botAddr, airdrop.totalRaw)
+        const approveData = encodeApprove(MULTICALL3_ADDRESS as Address, airdrop.totalRaw)
         await handler.sendInteractionRequest(
             channelId,
             {
                 type: 'transaction',
-                id: `drop-deposit-react-${Date.now()}`,
-                title: 'Send $TOWNS to bot',
-                subtitle: `Send ${formatEther(airdrop.totalRaw)} $TOWNS to the airdrop bot`,
+                id: `drop-close-approve-${Date.now()}`,
+                title: 'Approve $TOWNS for distribution',
+                subtitle: `Approve ${formatEther(airdrop.totalRaw)} $TOWNS for Multicall3`,
                 tx: {
                     chainId: '8453',
                     to: TOWNS_ADDRESS as `0x${string}`,
                     value: '0',
-                    data: depositData,
+                    data: approveData,
                 },
                 recipient: userId as `0x${string}`,
             },
@@ -474,44 +468,29 @@ bot.onInteractionResponse(async (handler, event) => {
 
         const memberAddrs = pending.memberAddresses!
         const amountPer = pending.totalRaw / BigInt(memberAddrs.length)
-        const botAddr = (await getBotDepositTarget()) as `0x${string}` | undefined
-        pendingDrops.delete(userId as `0x${string}`)
-        if (!botAddr) {
-            await handler.sendMessage(
-                channelId,
-                'Bot is not configured for airdrops. Contact support.',
-                { threadId, mentions: [{ userId, displayName: 'Creator' }] },
-            )
-            return
-        }
+        pending.creatorWallet = userId as `0x${string}`
+        pending.batches = chunkRecipients(memberAddrs)
+        pending.batchIndex = -1
+        pending.threadId = threadId
+        pending.amountPer = amountPer
         await handler.sendMessage(
             channelId,
-            `Distributing to **${memberAddrs.length}** members. Sign **once** to send **${formatEther(pending.totalRaw)} $TOWNS** to the bot; the bot will then distribute to everyone.`,
+            `Distributing to **${memberAddrs.length}** members. Sign **Approve** for Multicall3 to use your $TOWNS, then sign each batch.`,
             { threadId, mentions: [{ userId, displayName: 'Creator' }] },
         )
-        pendingDeposits.set(userId as `0x${string}`, {
-            channelId,
-            threadId,
-            recipients: memberAddrs,
-            amountPer,
-            totalRaw: pending.totalRaw,
-            creatorId: pending.creatorId,
-            mode: 'fixed',
-            depositTarget: botAddr,
-        })
-        const depositData = encodeTransfer(botAddr, pending.totalRaw)
+        const approveData = encodeApprove(MULTICALL3_ADDRESS as Address, pending.totalRaw)
         await handler.sendInteractionRequest(
             channelId,
             {
                 type: 'transaction',
-                id: `drop-deposit-fixed-${Date.now()}`,
-                title: 'Send $TOWNS to bot',
-                subtitle: `Send ${formatEther(pending.totalRaw)} $TOWNS to the airdrop bot`,
+                id: `drop-fixed-approve-${Date.now()}`,
+                title: 'Approve $TOWNS for distribution',
+                subtitle: `Approve ${formatEther(pending.totalRaw)} $TOWNS for Multicall3`,
                 tx: {
                     chainId: '8453',
                     to: TOWNS_ADDRESS as `0x${string}`,
                     value: '0',
-                    data: depositData,
+                    data: approveData,
                 },
                 recipient: userId as `0x${string}`,
             },
