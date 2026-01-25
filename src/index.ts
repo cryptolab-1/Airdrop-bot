@@ -251,13 +251,11 @@ bot.onReaction(async (handler, event) => {
                 { threadId, mentions: [{ userId: airdrop.creatorId, displayName: 'Creator' }] },
             )
         }
-        // Resolve creator's wallet (smart account if available, else userId)
-        const creatorResolved = await resolveMemberAddresses(bot as AnyBot, [airdrop.creatorId])
-        const creatorWallet = (creatorResolved[0] ?? airdrop.creatorId) as `0x${string}`
+        // Use creatorId as source: same address must sign approve and be 'from' in transferFrom
         const amountPer = airdrop.totalRaw / BigInt(recipientAddresses.length)
         
-        // Check balance first
-        const balanceCheck = await checkBalance(creatorWallet, airdrop.totalRaw)
+        // Check balance first (creatorId = signer of approve tx)
+        const balanceCheck = await checkBalance(airdrop.creatorId, airdrop.totalRaw)
         if (!balanceCheck.ok) {
             await handler.sendMessage(
                 channelId,
@@ -267,8 +265,6 @@ bot.onReaction(async (handler, event) => {
             return
         }
         
-        // Log recipient addresses for debugging (first 3 only)
-        const addrPreview = recipientAddresses.slice(0, 3).map(a => a.slice(0, 10) + '...').join(', ')
         const batches = chunkRecipients(recipientAddresses)
         await handler.sendMessage(
             channelId,
@@ -282,7 +278,7 @@ bot.onReaction(async (handler, event) => {
             channelId,
             messageId: airdrop.airdropMessageId,
             creatorId: airdrop.creatorId,
-            creatorWallet,
+            creatorWallet: airdrop.creatorId,
             batches,
             batchIndex: -1,
             threadId,
@@ -342,9 +338,8 @@ bot.onInteractionResponse(async (handler, event) => {
             }
         }
         if (!confirmed) return
-        // Resolve creator's wallet (smart account if available, else userId)
-        const creatorResolved = await resolveMemberAddresses(bot as AnyBot, [userId])
-        const creatorWallet = (creatorResolved[0] ?? userId) as `0x${string}`
+        // Use userId as source: same address signs approve and is 'from' in transferFrom
+        const creatorWallet = userId as `0x${string}`
 
         const { eventId: threadRootId } = await handler.sendMessage(
             channelId,
