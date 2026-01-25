@@ -172,6 +172,32 @@ export function encodeTransfer(to: Address, amountRaw: bigint): `0x${string}` {
 }
 
 /**
+ * Encode ERC20 approve(spender, amount). Creator approves Multicall3 so it can transferFrom.
+ */
+export function encodeApprove(spender: Address, amountRaw: bigint): `0x${string}` {
+    return encodeFunctionData({
+        abi: erc20Abi,
+        functionName: 'approve',
+        args: [spender, amountRaw],
+    })
+}
+
+/**
+ * Encode ERC20 transferFrom(from, to, amount). Multicall3 calls this; from must have approved Multicall3.
+ */
+export function encodeTransferFrom(
+    from: Address,
+    to: Address,
+    amountRaw: bigint
+): `0x${string}` {
+    return encodeFunctionData({
+        abi: erc20Abi,
+        functionName: 'transferFrom',
+        args: [from, to, amountRaw],
+    })
+}
+
+/**
  * Chunk recipients into batches of at most MAX_TRANSFERS_PER_BATCH.
  */
 export function chunkRecipients(recipients: Address[]): Address[][] {
@@ -183,17 +209,18 @@ export function chunkRecipients(recipients: Address[]): Address[][] {
 }
 
 /**
- * Encode Multicall3 aggregate3(calls) for a batch of transfer(recipient, amountPer).
- * No approval needed - transfers come directly from creator's wallet.
+ * Encode Multicall3 aggregate3(calls) for a batch of transferFrom(creator, recipient, amountPer).
+ * Creator must have approved MULTICALL3_ADDRESS for the total amount.
  */
-export function encodeAggregate3Transfers(
+export function encodeAggregate3TransferFrom(
+    creator: Address,
     recipients: Address[],
     amountPer: bigint
 ): `0x${string}` {
     const calls = recipients.map((to) => ({
         target: TOWNS_ADDRESS as Address,
         allowFailure: false as const,
-        callData: encodeTransfer(to, amountPer),
+        callData: encodeTransferFrom(creator, to, amountPer),
     }))
     return encodeFunctionData({
         abi: multicall3Abi,
