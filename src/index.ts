@@ -42,16 +42,9 @@ type PendingDeposit = {
 }
 const pendingDeposits = new Map<Address, PendingDeposit>()
 
-/** Deposit target is treasury only; must support ERC-7821 execute() for distribution. */
-async function getBotDepositTarget(): Promise<Address | undefined> {
-    const treasury = bot.appAddress as Address | undefined
-    if (!treasury) return undefined
-    try {
-        const ok = await supportsExecutionMode(bot.viem, { address: treasury })
-        return ok ? treasury : undefined
-    } catch {
-        return undefined
-    }
+/** Deposit target is always bot.appAddress (treasury). Same for both drop fixed and drop react. */
+function getBotDepositTarget(): Address | undefined {
+    return (bot.appAddress as Address | undefined) ?? undefined
 }
 
 function filterOutBotRecipients(addrs: Address[]): Address[] {
@@ -315,11 +308,11 @@ bot.onReaction(async (handler, event) => {
             )
         }
         const amountPer = airdrop.totalRaw / BigInt(recipientAddresses.length)
-        const botAddr = (await getBotDepositTarget()) as `0x${string}` | undefined
+        const botAddr = getBotDepositTarget() as `0x${string}` | undefined
         if (!botAddr) {
             await handler.sendMessage(
                 channelId,
-                'Bot is not configured for airdrops. Contact support.',
+                'Bot is not configured for airdrops (no treasury). Contact support.',
                 { threadId, mentions: [{ userId: airdrop.creatorId, displayName: 'Creator' }] },
             )
             return
@@ -424,12 +417,12 @@ bot.onInteractionResponse(async (handler, event) => {
 
         const memberAddrs = pending.memberAddresses!
         const amountPer = pending.totalRaw / BigInt(memberAddrs.length)
-        const botAddr = (await getBotDepositTarget()) as `0x${string}` | undefined
+        const botAddr = getBotDepositTarget() as `0x${string}` | undefined
         pendingDrops.delete(userId as `0x${string}`)
         if (!botAddr) {
             await handler.sendMessage(
                 channelId,
-                'Bot is not configured for airdrops. Contact support.',
+                'Bot is not configured for airdrops (no treasury). Contact support.',
                 { threadId, mentions: [{ userId, displayName: 'Creator' }] },
             )
             return
