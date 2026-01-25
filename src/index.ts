@@ -123,7 +123,7 @@ async function runBotDistribution(
         if (treasury && fromAddress.toLowerCase() === treasury.toLowerCase() && account) {
             const ok = await supportsExecutionMode(bot.viem, { address: treasury })
             if (ok) {
-                await executeErc7821(bot.viem, {
+                const approveHash = await executeErc7821(bot.viem, {
                     address: treasury,
                     account: account as any,
                     calls: [
@@ -133,6 +133,7 @@ async function runBotDistribution(
                         },
                     ],
                 })
+                await waitForTransactionReceipt(bot.viem, { hash: approveHash as `0x${string}` })
                 for (const batch of batches) {
                     const aggCalls = buildAggregate3TransferFromCalls(fromAddress, batch, amountPer)
                     await executeErc7821(bot.viem, {
@@ -153,12 +154,13 @@ async function runBotDistribution(
                 return { ok: true }
             }
         }
-        await writeContract(bot.viem, {
+        const approveHash = await writeContract(bot.viem, {
             address: TOWNS_ADDRESS as Address,
             abi: erc20Abi,
             functionName: 'approve',
             args: [MULTICALL3_ADDRESS as Address, totalRaw],
         })
+        await waitForTransactionReceipt(bot.viem, { hash: approveHash as `0x${string}` })
         for (const batch of batches) {
             const calls = buildAggregate3TransferFromCalls(fromAddress, batch, amountPer)
             await writeContract(bot.viem, {
