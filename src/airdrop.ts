@@ -237,12 +237,15 @@ export async function uniqueTownsWallets(
  * getSmartAccountFromUserId, exclude the bot (and any extra addresses), and dedupe
  * by final wallet address so each person receives exactly once.
  * @param excludeAddresses - Optional list of addresses to exclude (e.g. other bots in the chat)
+ * @param onlyResolved - If true (default), only include userIds that resolve to a Towns wallet
+ *   via getSmartAccountFromUserId. Skips ids that return null (e.g. "hex from name" in memberships).
  */
 export async function getUniqueRecipientAddresses(
     bot: AnyBot,
     userIds: string[],
-    opts?: { excludeAddresses?: string[] }
+    opts?: { excludeAddresses?: string[]; onlyResolved?: boolean }
 ): Promise<Address[]> {
+    const onlyResolved = opts?.onlyResolved !== false
     const botApp = ((bot as { appAddress?: string }).appAddress ?? '').toLowerCase()
     const botId = ((bot as { botId?: string }).botId ?? '').toLowerCase()
     const extra = new Set(
@@ -258,6 +261,7 @@ export async function getUniqueRecipientAddresses(
         const addr = await getSmartAccountFromUserId(bot as Bot<BotCommand[]>, {
             userId: uid as Address,
         })
+        if (onlyResolved && addr == null) continue
         const wallet = ((addr ?? uid) as string).toLowerCase()
         if (seen.has(wallet) || extra.has(wallet)) continue
         seen.add(wallet)
