@@ -122,30 +122,44 @@ export function isJoinReaction(r: string): boolean {
     return JOIN_SHORTCODES.some((s) => n(r) === n(s))
 }
 
+function parseMembershipsToUserIds(memberships: unknown): string[] {
+    if (Array.isArray(memberships)) {
+        return memberships
+            .map((m: unknown) => (m as { userId?: string })?.userId ?? (typeof m === 'string' ? m : null))
+            .filter((id): id is string => typeof id === 'string' && /^0x[a-fA-F0-9]{40}$/.test(id))
+    }
+    if (memberships && typeof memberships === 'object' && !Array.isArray(memberships)) {
+        return Object.keys(memberships as Record<string, unknown>).filter((k) =>
+            /^0x[a-fA-F0-9]{40}$/.test(k)
+        )
+    }
+    return []
+}
+
 /**
- * Get space member user IDs via snapshot API (getSpaceMemberships).
- * Uses bot.client.getStream + SnapshotGetter when available.
+ * Get space member user IDs via snapshot API.
+ * Prefers bot.snapshot.getSpaceMemberships(spaceId) per Towns docs when available;
+ * otherwise uses bot.client.getStream + SnapshotGetter.
  * Returns empty array if snapshot API is unavailable or fails.
- * Per docs: userId is the user's address (0x…).
+ * Per docs: userId is the user's address (0x…). Snapshot data may be cached.
  */
 export async function getSpaceMemberIds(bot: AnyBot, spaceId: string): Promise<string[]> {
     try {
-        const client = (bot as { client?: { getStream?(streamId: string): Promise<{ snapshot?: { content?: { case?: string; value?: Record<string, unknown> } } }> } }).client
+        const snapshotApi = (bot as { snapshot?: { getSpaceMemberships?(id: string): Promise<unknown> } })
+            .snapshot
+        if (snapshotApi?.getSpaceMemberships) {
+            const memberships = await snapshotApi.getSpaceMemberships(spaceId)
+            return parseMembershipsToUserIds(memberships)
+        }
+        const client = (bot as { client?: { getStream?(streamId: string): Promise<unknown> } }).client
         const getStream = client?.getStream
         if (!getStream) return []
-        const snapshot = SnapshotGetter(getStream)
-        const getSpaceMemberships = (snapshot as { getSpaceMemberships?(id: string): Promise<unknown> }).getSpaceMemberships
+        const snapshot = SnapshotGetter(getStream as (streamId: string) => Promise<{ snapshot?: { content?: { case?: string; value?: Record<string, unknown> } } }>)
+        const getSpaceMemberships = (snapshot as { getSpaceMemberships?(id: string): Promise<unknown> })
+            .getSpaceMemberships
         if (!getSpaceMemberships) return []
         const memberships = await getSpaceMemberships(spaceId)
-        if (Array.isArray(memberships)) {
-            return memberships
-                .map((m: unknown) => (m as { userId?: string })?.userId ?? (typeof m === 'string' ? m : null))
-                .filter((id): id is string => typeof id === 'string' && /^0x[a-fA-F0-9]{40}$/.test(id))
-        }
-        if (memberships && typeof memberships === 'object' && !Array.isArray(memberships)) {
-            return Object.keys(memberships).filter((k) => /^0x[a-fA-F0-9]{40}$/.test(k))
-        }
-        return []
+        return parseMembershipsToUserIds(memberships)
     } catch {
         return []
     }
@@ -214,6 +228,34 @@ export async function uniqueTownsWallets(
             ([id, val]) => id !== u && val === u
         )
         if (!isSmartAccountOfAnother) out.push(uid as Address)
+    }
+    return out
+}
+
+/**
+ * For fixed drops: get channel/space member userIds, resolve each to wallet via
+ * getSmartAccountFromUserId, exclude the bot, and dedupe by final wallet address
+ * so each person receives exactly once (fixes "2 addresses when alone" when the
+ * same user appears as both wallet id and linked account in memberships).
+ */
+export async function getUniqueRecipientAddresses(
+    bot: AnyBot,
+    userIds: string[]
+): Promise<Address[]> {
+    const botApp = ((bot as { appAddress?: string }).appAddress ?? '').toLowerCase()
+    const botId = ((bot as { botId?: string }).botId ?? '').toLowerCase()
+    const seen = new Set<string>()
+    const out: Address[] = []
+    for (const uid of userIds) {
+        const w = uid.toLowerCase()
+        if (w === botApp || w === botId) continue
+        const addr = await getSmartAccountFromUserId(bot as Bot<BotCommand[]>, {
+            userId: uid as Address,
+        })
+        const wallet = ((addr ?? uid) as string).toLowerCase()
+        if (seen.has(wallet)) continue
+        seen.add(wallet)
+        out.push((addr ?? (uid as Address)) as Address)
     }
     return out
 }

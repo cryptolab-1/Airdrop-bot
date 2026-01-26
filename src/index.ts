@@ -15,6 +15,7 @@ import {
     reactionAirdrops,
     getChannelMemberIds,
     getSpaceMemberIds,
+    getUniqueRecipientAddresses,
     encodeTransfer,
     chunkRecipients,
     deleteReactionAirdrop,
@@ -160,25 +161,11 @@ bot.onSlashCommand('drop', async (handler, event) => {
     const totalRaw = parseEther(amount.toString())
 
     if (!isReact) {
-        // Prefer snapshot API (getSpaceMemberships) for space members; fallback to channel stream view
+        // Use snapshot API per Towns docs: bot.snapshot.getSpaceMemberships(spaceId); fallback to channel stream view
         let userIds = await getSpaceMemberIds(bot as AnyBot, spaceId)
         if (userIds.length === 0) userIds = await getChannelMemberIds(bot as AnyBot, channelId)
-        // Exclude bot and dedupe: keep Towns wallet when same person appears as wallet + linked account
-        const filteredUserIds = userIds.filter((uid) => {
-            const w = uid.toLowerCase()
-            const a = (bot.appAddress ?? '').toLowerCase()
-            const b = (bot.botId ?? '').toLowerCase()
-            return w !== a && w !== b
-        })
-        if (filteredUserIds.length === 0) {
-            await handler.sendMessage(
-                channelId,
-                'No channel members found (or only bot). Try a channel others have joined.',
-            )
-            return
-        }
-        let memberAddresses = await uniqueTownsWallets(bot as AnyBot, filteredUserIds)
-        memberAddresses = filterOutBotRecipients(memberAddresses)
+        // Resolve to wallets, exclude bot, dedupe by wallet so each person receives once (fixes "2 when alone")
+        const memberAddresses = await getUniqueRecipientAddresses(bot as AnyBot, userIds)
         if (memberAddresses.length === 0) {
             await handler.sendMessage(
                 channelId,
