@@ -122,16 +122,31 @@ export function isJoinReaction(r: string): boolean {
     return JOIN_SHORTCODES.some((s) => n(r) === n(s))
 }
 
+const ETH_ADDRESS_RE = /^0x[a-fA-F0-9]{40}$/
+function toUserId(m: unknown): string | null {
+    if (typeof m === 'string' && ETH_ADDRESS_RE.test(m)) return m
+    const o = m as { userId?: string } | null
+    if (o && typeof o.userId === 'string' && ETH_ADDRESS_RE.test(o.userId)) return o.userId
+    return null
+}
+
+/**
+ * Extract userIds from space membership data. Use only the canonical membership map:
+ * - If value has .memberships (map userId -> Membership), use those keys only.
+ * - Else if value is that map (keys are userIds), use Object.keys.
+ * - Else if value is an array of { userId } or 0x strings, use that.
+ * Avoids treating display_names or other 0x-like fields as userIds.
+ */
 function parseMembershipsToUserIds(memberships: unknown): string[] {
-    if (Array.isArray(memberships)) {
-        return memberships
-            .map((m: unknown) => (m as { userId?: string })?.userId ?? (typeof m === 'string' ? m : null))
-            .filter((id): id is string => typeof id === 'string' && /^0x[a-fA-F0-9]{40}$/.test(id))
-    }
     if (memberships && typeof memberships === 'object' && !Array.isArray(memberships)) {
-        return Object.keys(memberships as Record<string, unknown>).filter((k) =>
-            /^0x[a-fA-F0-9]{40}$/.test(k)
-        )
+        const obj = memberships as Record<string, unknown>
+        const map = obj.memberships && typeof obj.memberships === 'object' && !Array.isArray(obj.memberships)
+            ? (obj.memberships as Record<string, unknown>)
+            : obj
+        return Object.keys(map).filter((k) => ETH_ADDRESS_RE.test(k))
+    }
+    if (Array.isArray(memberships)) {
+        return memberships.map(toUserId).filter((id): id is string => id != null)
     }
     return []
 }

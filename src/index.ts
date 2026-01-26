@@ -160,9 +160,10 @@ bot.onSlashCommand('drop', async (handler, event) => {
     const totalRaw = parseEther(amount.toString())
 
     if (!isReact) {
-        // Use snapshot API per Towns docs: bot.snapshot.getSpaceMemberships(spaceId); fallback to channel stream view
-        let userIds = await getSpaceMemberIds(bot as AnyBot, spaceId)
-        if (userIds.length === 0) userIds = await getChannelMemberIds(bot as AnyBot, channelId)
+        // Channel-first: people who joined this channel are the real participants (resolvable wallets).
+        // Space memberships can include stale or non-wallet ids (e.g. display/linked data), so use as fallback only.
+        let userIds = await getChannelMemberIds(bot as AnyBot, channelId)
+        if (userIds.length === 0) userIds = await getSpaceMemberIds(bot as AnyBot, spaceId)
         const excludeAddresses = (process.env.AIRDROP_EXCLUDE_ADDRESSES ?? '')
             .split(',')
             .map((s) => s.trim())
