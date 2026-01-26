@@ -13,8 +13,6 @@ import {
     parseEther,
     pendingDrops,
     reactionAirdrops,
-    getChannelMemberIds,
-    getSpaceMemberIds,
     getMembershipNftHolderAddresses,
     isEthAddress,
     getUniqueRecipientAddresses,
@@ -167,33 +165,24 @@ bot.onSlashCommand('drop', async (handler, event) => {
             .map((s) => s.trim())
             .filter(Boolean)
         const nftFromEnv = (process.env.AIRDROP_MEMBERSHIP_NFT_ADDRESS ?? '').trim()
-        let memberAddresses: Address[] = []
-        // When AIRDROP_MEMBERSHIP_NFT_ADDRESS is set, use only current holders of that NFT for eligibility.
-        if (isEthAddress(nftFromEnv)) {
-            const nftHolders = await getMembershipNftHolderAddresses(bot as AnyBot, nftFromEnv as Address)
-            memberAddresses = await getUniqueRecipientAddresses(bot as AnyBot, nftHolders.map((a) => a as string), {
-                excludeAddresses: excludeAddresses.length > 0 ? excludeAddresses : undefined,
-                onlyResolved: false,
-            })
+        if (!isEthAddress(nftFromEnv)) {
+            await handler.sendMessage(
+                channelId,
+                'Set **AIRDROP_MEMBERSHIP_NFT_ADDRESS** in `.env` to your space’s membership NFT contract address (0x…), then try again.',
+                { mentions: [{ userId, displayName: 'Creator' }] },
+            )
+            return
         }
-        if (memberAddresses.length === 0 && isEthAddress(spaceId)) {
-            const nftHolders = await getMembershipNftHolderAddresses(bot as AnyBot, spaceId as Address)
-            memberAddresses = await getUniqueRecipientAddresses(bot as AnyBot, nftHolders.map((a) => a as string), {
-                excludeAddresses: excludeAddresses.length > 0 ? excludeAddresses : undefined,
-                onlyResolved: false,
-            })
-        }
-        if (memberAddresses.length === 0) {
-            let userIds = await getChannelMemberIds(bot as AnyBot, channelId)
-            if (userIds.length === 0) userIds = await getSpaceMemberIds(bot as AnyBot, spaceId)
-            memberAddresses = await getUniqueRecipientAddresses(bot as AnyBot, userIds, {
-                excludeAddresses: excludeAddresses.length > 0 ? excludeAddresses : undefined,
-            })
-        }
+        const nftHolders = await getMembershipNftHolderAddresses(bot as AnyBot, nftFromEnv as Address)
+        const memberAddresses = await getUniqueRecipientAddresses(bot as AnyBot, nftHolders.map((a) => a as string), {
+            excludeAddresses: excludeAddresses.length > 0 ? excludeAddresses : undefined,
+            onlyResolved: false,
+        })
         if (memberAddresses.length === 0) {
             await handler.sendMessage(
                 channelId,
-                'No channel members found (or only bot). Try a channel others have joined.',
+                'No holders found for the NFT contract. Check **AIRDROP_MEMBERSHIP_NFT_ADDRESS** or try again in a moment.',
+                { mentions: [{ userId, displayName: 'Creator' }] },
             )
             return
         }

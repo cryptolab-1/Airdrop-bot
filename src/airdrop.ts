@@ -1,6 +1,6 @@
 /**
  * Airdrop state and helpers for $TOWNS airdrops.
- * - Fixed: total amount split among all channel members.
+ * - Fixed: total amount split among current holders of the membership NFT (AIRDROP_MEMBERSHIP_NFT_ADDRESS).
  * - Reaction: airdrop active users who react 💸 (money with wings); total split between them.
  */
 
@@ -10,7 +10,7 @@ import { erc20Abi } from 'viem'
 import { encodeFunctionData } from 'viem'
 import { multicall3Abi } from 'viem'
 import { getLogs, getBlockNumber, readContract, multicall } from 'viem/actions'
-import { getSmartAccountFromUserId, SnapshotGetter } from '@towns-protocol/bot'
+import { getSmartAccountFromUserId } from '@towns-protocol/bot'
 import type { Bot, BotCommand } from '@towns-protocol/bot'
 
 export type AnyBot = Bot<BotCommand[]>
@@ -123,64 +123,6 @@ export function isJoinReaction(r: string): boolean {
     return JOIN_SHORTCODES.some((s) => n(r) === n(s))
 }
 
-const ETH_ADDRESS_RE = /^0x[a-fA-F0-9]{40}$/
-function toUserId(m: unknown): string | null {
-    if (typeof m === 'string' && ETH_ADDRESS_RE.test(m)) return m
-    const o = m as { userId?: string } | null
-    if (o && typeof o.userId === 'string' && ETH_ADDRESS_RE.test(o.userId)) return o.userId
-    return null
-}
-
-/**
- * Extract userIds from space membership data. Use only the canonical membership map:
- * - If value has .memberships (map userId -> Membership), use those keys only.
- * - Else if value is that map (keys are userIds), use Object.keys.
- * - Else if value is an array of { userId } or 0x strings, use that.
- * Avoids treating display_names or other 0x-like fields as userIds.
- */
-function parseMembershipsToUserIds(memberships: unknown): string[] {
-    if (memberships && typeof memberships === 'object' && !Array.isArray(memberships)) {
-        const obj = memberships as Record<string, unknown>
-        const map = obj.memberships && typeof obj.memberships === 'object' && !Array.isArray(obj.memberships)
-            ? (obj.memberships as Record<string, unknown>)
-            : obj
-        return Object.keys(map).filter((k) => ETH_ADDRESS_RE.test(k))
-    }
-    if (Array.isArray(memberships)) {
-        return memberships.map(toUserId).filter((id): id is string => id != null)
-    }
-    return []
-}
-
-/**
- * Get space member user IDs via snapshot API.
- * Prefers bot.snapshot.getSpaceMemberships(spaceId) per Towns docs when available;
- * otherwise uses bot.client.getStream + SnapshotGetter.
- * Returns empty array if snapshot API is unavailable or fails.
- * Per docs: userId is the user's address (0x…). Snapshot data may be cached.
- */
-export async function getSpaceMemberIds(bot: AnyBot, spaceId: string): Promise<string[]> {
-    try {
-        const snapshotApi = (bot as { snapshot?: { getSpaceMemberships?(id: string): Promise<unknown> } })
-            .snapshot
-        if (snapshotApi?.getSpaceMemberships) {
-            const memberships = await snapshotApi.getSpaceMemberships(spaceId)
-            return parseMembershipsToUserIds(memberships)
-        }
-        const client = (bot as { client?: { getStream?(streamId: string): Promise<unknown> } }).client
-        const getStream = client?.getStream
-        if (!getStream) return []
-        const snapshot = SnapshotGetter(getStream as (streamId: string) => Promise<{ snapshot?: { content?: { case?: string; value?: Record<string, unknown> } } }>)
-        const getSpaceMemberships = (snapshot as { getSpaceMemberships?(id: string): Promise<unknown> })
-            .getSpaceMemberships
-        if (!getSpaceMemberships) return []
-        const memberships = await getSpaceMemberships(spaceId)
-        return parseMembershipsToUserIds(memberships)
-    } catch {
-        return []
-    }
-}
-
 /** Minimal ABI to read current holders: totalSupply + ownerOf (same as Basescan "Holders" tab). */
 const ERC721_HOLDERS_ABI = parseAbi([
     'function totalSupply() view returns (uint256)',
@@ -199,11 +141,30 @@ const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000' as Address
 
 const OWNEROF_BATCH_SIZE = 256
 
+/** Default 30s per attempt. Override with AIRDROP_NFT_TIMEOUT_MS. */
+const DEFAULT_NFT_TIMEOUT_MS = 30_000
+/** Default 3 attempts. Override with AIRDROP_NFT_RETRIES. */
+const DEFAULT_NFT_RETRIES = 3
+/** Default 3s between retries. Override with AIRDROP_NFT_RETRY_DELAY_MS. */
+const DEFAULT_NFT_RETRY_DELAY_MS = 3_000
+
+function sleep(ms: number): Promise<void> {
+    return new Promise((r) => setTimeout(r, ms))
+}
+
+function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
+    return Promise.race([
+        p,
+        new Promise<T>((_, rej) => setTimeout(() => rej(new Error('NFT fetch timeout')), ms)),
+    ])
+}
+
 /**
  * Get current NFT holder addresses the same way Basescan's "Holders" tab does:
  * call totalSupply() then ownerOf(1)..ownerOf(totalSupply) and dedupe.
- * Uses multicall to batch ownerOf reads. Falls back to event scanning if the contract
- * has no totalSupply (e.g. some plain ERC721) or on error.
+ * Uses multicall to batch ownerOf reads. Retries with backoff on failure or empty;
+ * uses longer timeout per attempt. Falls back to event scanning if all retries fail.
+ * Env: AIRDROP_NFT_TIMEOUT_MS, AIRDROP_NFT_RETRIES, AIRDROP_NFT_RETRY_DELAY_MS.
  */
 export async function getMembershipNftHolderAddresses(
     bot: AnyBot,
@@ -211,7 +172,11 @@ export async function getMembershipNftHolderAddresses(
 ): Promise<Address[]> {
     const viem = (bot as { viem?: { request?: unknown } }).viem
     if (!viem) return []
-    try {
+    const timeoutMs = Math.max(5000, parseInt(process.env.AIRDROP_NFT_TIMEOUT_MS ?? String(DEFAULT_NFT_TIMEOUT_MS), 10) || DEFAULT_NFT_TIMEOUT_MS)
+    const retries = Math.max(1, Math.min(10, parseInt(process.env.AIRDROP_NFT_RETRIES ?? String(DEFAULT_NFT_RETRIES), 10) || DEFAULT_NFT_RETRIES))
+    const retryDelayMs = Math.max(500, parseInt(process.env.AIRDROP_NFT_RETRY_DELAY_MS ?? String(DEFAULT_NFT_RETRY_DELAY_MS), 10) || DEFAULT_NFT_RETRY_DELAY_MS)
+
+    const doFetch = async (): Promise<Address[]> => {
         const total = await readContract(viem, {
             address: nftContractAddress,
             abi: ERC721_HOLDERS_ABI,
@@ -220,7 +185,6 @@ export async function getMembershipNftHolderAddresses(
         if (total === 0n) return []
 
         const holders = new Set<string>()
-        // TokenIds 1..total (ERC721A); or 0..total-1 for 0-based contracts. Try 1-based first.
         for (const base of [1n, 0n]) {
             const last = base === 1n ? total : total - 1n
             if (last < base) continue
@@ -244,9 +208,18 @@ export async function getMembershipNftHolderAddresses(
             if (holders.size > 0) break
         }
         return [...holders] as Address[]
-    } catch {
-        return getMembershipNftHolderAddressesFromEvents(bot, nftContractAddress)
     }
+
+    for (let attempt = 0; attempt < retries; attempt++) {
+        try {
+            const result = await withTimeout(doFetch(), timeoutMs)
+            if (result.length > 0) return result
+        } catch {
+            // continue to retry or fallback
+        }
+        if (attempt < retries - 1) await sleep(retryDelayMs)
+    }
+    return getMembershipNftHolderAddressesFromEvents(bot, nftContractAddress)
 }
 
 /**
@@ -303,26 +276,6 @@ async function getMembershipNftHolderAddressesFromEvents(
 /** True if s looks like an Ethereum address (0x + 40 hex). */
 export function isEthAddress(s: string): boolean {
     return /^0x[a-fA-F0-9]{40}$/.test(s)
-}
-
-/**
- * Get channel member user IDs via stream view (getMembers().joined).
- * Returns empty array if unavailable.
- */
-export async function getChannelMemberIds(
-    bot: AnyBot,
-    channelId: string
-): Promise<string[]> {
-    try {
-        const view = await bot.getStreamView(channelId)
-        const members = (view as { getMembers?: () => { joined?: Map<string, unknown> } })
-            ?.getMembers?.()
-            ?.joined
-        if (!members || typeof members.keys !== 'function') return []
-        return Array.from(members.keys())
-    } catch {
-        return []
-    }
 }
 
 /**

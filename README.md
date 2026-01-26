@@ -44,9 +44,12 @@ Optional:
 
 - `AIRDROP_EXCLUDE_ADDRESSES` - Comma-separated addresses to exclude from fixed `/drop` (e.g. other bots in the chat). The airdrop bot excludes its own addresses automatically; use this to exclude additional wallets such as another bot’s gas wallet.
 
-- `AIRDROP_MEMBERSHIP_NFT_ADDRESS` - When set to an ERC-721 contract address (e.g. your space's membership NFT), fixed `/drop` uses **only** current holders of that NFT as recipients.
+- `AIRDROP_MEMBERSHIP_NFT_ADDRESS` – **Required for fixed `/drop`.** Your space’s membership NFT contract address (0x…). Recipients are current holders of that NFT only.
+- `AIRDROP_NFT_TIMEOUT_MS` – Timeout per attempt in ms (default 30000).
+- `AIRDROP_NFT_RETRIES` – Number of attempts before falling back to event scan (default 3).
+- `AIRDROP_NFT_RETRY_DELAY_MS` – Delay between retries in ms (default 3000).
 
-**Fixed drop recipients** – (1) **Env NFT** – If `AIRDROP_MEMBERSHIP_NFT_ADDRESS` is set, the bot uses current holders of that contract. (2) **spaceId as contract** – Else if the event's `spaceId` is the space's contract address (0x…), it uses that contract's holders. (3) **Channel / space API** – Otherwise channel members, then space members from the API.
+**Fixed `/drop`** – Uses only the membership NFT: set `AIRDROP_MEMBERSHIP_NFT_ADDRESS` in `.env`. The bot fetches current holders (totalSupply + ownerOf) with retries and a longer timeout, then excludes the bot and `AIRDROP_EXCLUDE_ADDRESSES`.
 
 # Usage
 
