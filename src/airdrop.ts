@@ -5,11 +5,11 @@
  */
 
 import type { Address } from 'viem'
-import { parseEther, formatEther, parseAbiItem } from 'viem'
+import { parseEther, formatEther, parseAbi, parseAbiItem } from 'viem'
 import { erc20Abi } from 'viem'
 import { encodeFunctionData } from 'viem'
 import { multicall3Abi } from 'viem'
-import { getLogs, getBlockNumber } from 'viem/actions'
+import { getLogs, getBlockNumber, readContract, multicall } from 'viem/actions'
 import { getSmartAccountFromUserId, SnapshotGetter } from '@towns-protocol/bot'
 import type { Bot, BotCommand } from '@towns-protocol/bot'
 
@@ -181,20 +181,79 @@ export async function getSpaceMemberIds(bot: AnyBot, spaceId: string): Promise<s
     }
 }
 
-/** ERC-721 Transfer topic for membership NFT. */
+/** Minimal ABI to read current holders: totalSupply + ownerOf (same as Basescan "Holders" tab). */
+const ERC721_HOLDERS_ABI = parseAbi([
+    'function totalSupply() view returns (uint256)',
+    'function ownerOf(uint256 tokenId) view returns (address)',
+])
+
+/** ERC-721 Transfer (single token). */
 const ERC721_TRANSFER = parseAbiItem(
     'event Transfer(address indexed from, address indexed to, uint256 indexed tokenId)'
 )
+/** ERC-721A / EIP-2309 ConsecutiveTransfer (batch mint/transfer). */
+const ERC721A_CONSECUTIVE = parseAbiItem(
+    'event ConsecutiveTransfer(uint256 indexed fromTokenId, uint256 toTokenId, address indexed from, address indexed to)'
+)
 const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000' as Address
 
+const OWNEROF_BATCH_SIZE = 256
+
 /**
- * Get current membership NFT holder addresses for a space from on-chain Transfer events.
- * spaceId in event payloads is the unique identifier for the Space; each Space has its own contract address.
- * When that spaceId is the contract address (0x…), each joiner has minted a membership NFT on that contract.
- * We treat current token holders as eligible wallets.
- * Returns empty array on RPC/parse errors or if the contract has no transfers.
+ * Get current NFT holder addresses the same way Basescan's "Holders" tab does:
+ * call totalSupply() then ownerOf(1)..ownerOf(totalSupply) and dedupe.
+ * Uses multicall to batch ownerOf reads. Falls back to event scanning if the contract
+ * has no totalSupply (e.g. some plain ERC721) or on error.
  */
 export async function getMembershipNftHolderAddresses(
+    bot: AnyBot,
+    nftContractAddress: Address
+): Promise<Address[]> {
+    const viem = (bot as { viem?: { request?: unknown } }).viem
+    if (!viem) return []
+    try {
+        const total = await readContract(viem, {
+            address: nftContractAddress,
+            abi: ERC721_HOLDERS_ABI,
+            functionName: 'totalSupply',
+        })
+        if (total === 0n) return []
+
+        const holders = new Set<string>()
+        // TokenIds 1..total (ERC721A); or 0..total-1 for 0-based contracts. Try 1-based first.
+        for (const base of [1n, 0n]) {
+            const last = base === 1n ? total : total - 1n
+            if (last < base) continue
+            for (let start = base; start <= last; start += BigInt(OWNEROF_BATCH_SIZE)) {
+                const end = start + BigInt(OWNEROF_BATCH_SIZE) - 1n > last ? last : start + BigInt(OWNEROF_BATCH_SIZE) - 1n
+                const contracts = []
+                for (let id = start; id <= end; id++) {
+                    contracts.push({
+                        address: nftContractAddress,
+                        abi: ERC721_HOLDERS_ABI,
+                        functionName: 'ownerOf' as const,
+                        args: [id],
+                    })
+                }
+                const results = await multicall(viem, { contracts, allowFailure: true })
+                for (const r of results) {
+                    if (r.status === 'success' && r.result && (r.result as string).toLowerCase() !== ZERO_ADDRESS.toLowerCase())
+                        holders.add(((r.result as string).toLowerCase()) as Address)
+                }
+            }
+            if (holders.size > 0) break
+        }
+        return [...holders] as Address[]
+    } catch {
+        return getMembershipNftHolderAddressesFromEvents(bot, nftContractAddress)
+    }
+}
+
+/**
+ * Fallback: derive holders from Transfer / ConsecutiveTransfer events.
+ * Used when the contract has no totalSupply() or when direct reads fail.
+ */
+async function getMembershipNftHolderAddressesFromEvents(
     bot: AnyBot,
     spaceContractAddress: Address
 ): Promise<Address[]> {
@@ -202,21 +261,37 @@ export async function getMembershipNftHolderAddresses(
     if (!viem) return []
     try {
         const toBlock = await getBlockNumber(viem)
-        const chunk = 20_000n
+        const chunk = 5_000n
         const tokenToOwner = new Map<string, string>()
         for (let from = 0n; from <= toBlock; from += chunk) {
             const to = from + chunk > toBlock ? toBlock : from + chunk - 1n
-            const logs = await getLogs(viem, {
-                address: spaceContractAddress,
-                event: ERC721_TRANSFER,
-                fromBlock: from,
-                toBlock: to,
-            })
-            for (const log of logs) {
+            const [transferLogs, consecutiveLogs] = await Promise.all([
+                getLogs(viem, {
+                    address: spaceContractAddress,
+                    event: ERC721_TRANSFER,
+                    fromBlock: from,
+                    toBlock: to,
+                }),
+                getLogs(viem, {
+                    address: spaceContractAddress,
+                    event: ERC721A_CONSECUTIVE,
+                    fromBlock: from,
+                    toBlock: to,
+                }),
+            ])
+            for (const log of transferLogs) {
                 const tokenId = log.args?.tokenId
                 const toAddr = log.args?.to
                 if (tokenId != null && toAddr && (toAddr as string).toLowerCase() !== ZERO_ADDRESS.toLowerCase())
                     tokenToOwner.set(String(tokenId), (toAddr as string).toLowerCase())
+            }
+            for (const log of consecutiveLogs) {
+                const fromId = log.args?.fromTokenId != null ? BigInt(log.args.fromTokenId as bigint) : null
+                const toId = log.args?.toTokenId != null ? BigInt(log.args.toTokenId as bigint) : null
+                const toAddr = log.args?.to
+                if (fromId == null || toId == null || !toAddr || (toAddr as string).toLowerCase() === ZERO_ADDRESS.toLowerCase()) continue
+                const toStr = (toAddr as string).toLowerCase()
+                for (let id = fromId; id <= toId; id++) tokenToOwner.set(String(id), toStr)
             }
         }
         return [...new Set(tokenToOwner.values())].map((a) => a as Address)
