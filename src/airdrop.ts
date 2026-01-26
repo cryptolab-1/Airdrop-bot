@@ -9,7 +9,7 @@ import { parseEther, formatEther } from 'viem'
 import { erc20Abi } from 'viem'
 import { encodeFunctionData } from 'viem'
 import { multicall3Abi } from 'viem'
-import { getSmartAccountFromUserId } from '@towns-protocol/bot'
+import { getSmartAccountFromUserId, SnapshotGetter } from '@towns-protocol/bot'
 import type { Bot, BotCommand } from '@towns-protocol/bot'
 
 export type AnyBot = Bot<BotCommand[]>
@@ -123,7 +123,36 @@ export function isJoinReaction(r: string): boolean {
 }
 
 /**
- * Get channel member user IDs via stream view.
+ * Get space member user IDs via snapshot API (getSpaceMemberships).
+ * Uses bot.client.getStream + SnapshotGetter when available.
+ * Returns empty array if snapshot API is unavailable or fails.
+ * Per docs: userId is the user's address (0x…).
+ */
+export async function getSpaceMemberIds(bot: AnyBot, spaceId: string): Promise<string[]> {
+    try {
+        const client = (bot as { client?: { getStream?(streamId: string): Promise<{ snapshot?: { content?: { case?: string; value?: Record<string, unknown> } } }> } }).client
+        const getStream = client?.getStream
+        if (!getStream) return []
+        const snapshot = SnapshotGetter(getStream)
+        const getSpaceMemberships = (snapshot as { getSpaceMemberships?(id: string): Promise<unknown> }).getSpaceMemberships
+        if (!getSpaceMemberships) return []
+        const memberships = await getSpaceMemberships(spaceId)
+        if (Array.isArray(memberships)) {
+            return memberships
+                .map((m: unknown) => (m as { userId?: string })?.userId ?? (typeof m === 'string' ? m : null))
+                .filter((id): id is string => typeof id === 'string' && /^0x[a-fA-F0-9]{40}$/.test(id))
+        }
+        if (memberships && typeof memberships === 'object' && !Array.isArray(memberships)) {
+            return Object.keys(memberships).filter((k) => /^0x[a-fA-F0-9]{40}$/.test(k))
+        }
+        return []
+    } catch {
+        return []
+    }
+}
+
+/**
+ * Get channel member user IDs via stream view (getMembers().joined).
  * Returns empty array if unavailable.
  */
 export async function getChannelMemberIds(

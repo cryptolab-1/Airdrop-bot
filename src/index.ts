@@ -14,6 +14,7 @@ import {
     pendingDrops,
     reactionAirdrops,
     getChannelMemberIds,
+    getSpaceMemberIds,
     encodeTransfer,
     chunkRecipients,
     deleteReactionAirdrop,
@@ -159,7 +160,9 @@ bot.onSlashCommand('drop', async (handler, event) => {
     const totalRaw = parseEther(amount.toString())
 
     if (!isReact) {
-        const userIds = await getChannelMemberIds(bot as AnyBot, channelId)
+        // Prefer snapshot API (getSpaceMemberships) for space members; fallback to channel stream view
+        let userIds = await getSpaceMemberIds(bot as AnyBot, spaceId)
+        if (userIds.length === 0) userIds = await getChannelMemberIds(bot as AnyBot, channelId)
         // Exclude bot and dedupe: keep Towns wallet when same person appears as wallet + linked account
         const filteredUserIds = userIds.filter((uid) => {
             const w = uid.toLowerCase()
