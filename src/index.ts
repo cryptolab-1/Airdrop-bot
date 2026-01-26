@@ -166,17 +166,24 @@ bot.onSlashCommand('drop', async (handler, event) => {
             .split(',')
             .map((s) => s.trim())
             .filter(Boolean)
+        const nftFromEnv = (process.env.AIRDROP_MEMBERSHIP_NFT_ADDRESS ?? '').trim()
         let memberAddresses: Address[] = []
-        // spaceId is the unique identifier for the Space (see Events docs); each Space has its own contract address.
-        // When spaceId is that address (0x…), use membership NFT holders for eligibility (on-chain wallets).
-        if (isEthAddress(spaceId)) {
+        // When AIRDROP_MEMBERSHIP_NFT_ADDRESS is set, use only current holders of that NFT for eligibility.
+        if (isEthAddress(nftFromEnv)) {
+            const nftHolders = await getMembershipNftHolderAddresses(bot as AnyBot, nftFromEnv as Address)
+            memberAddresses = await getUniqueRecipientAddresses(bot as AnyBot, nftHolders.map((a) => a as string), {
+                excludeAddresses: excludeAddresses.length > 0 ? excludeAddresses : undefined,
+                onlyResolved: false,
+            })
+        }
+        if (memberAddresses.length === 0 && isEthAddress(spaceId)) {
             const nftHolders = await getMembershipNftHolderAddresses(bot as AnyBot, spaceId as Address)
             memberAddresses = await getUniqueRecipientAddresses(bot as AnyBot, nftHolders.map((a) => a as string), {
                 excludeAddresses: excludeAddresses.length > 0 ? excludeAddresses : undefined,
                 onlyResolved: false,
             })
         }
-        if (!isEthAddress(spaceId) || memberAddresses.length === 0) {
+        if (memberAddresses.length === 0) {
             let userIds = await getChannelMemberIds(bot as AnyBot, channelId)
             if (userIds.length === 0) userIds = await getSpaceMemberIds(bot as AnyBot, spaceId)
             memberAddresses = await getUniqueRecipientAddresses(bot as AnyBot, userIds, {

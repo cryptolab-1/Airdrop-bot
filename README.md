@@ -44,7 +44,9 @@ Optional:
 
 - `AIRDROP_EXCLUDE_ADDRESSES` - Comma-separated addresses to exclude from fixed `/drop` (e.g. other bots in the chat). The airdrop bot excludes its own addresses automatically; use this to exclude additional wallets such as another bot’s gas wallet.
 
-**Fixed drop recipients** – The bot determines who receives a fixed `/drop` in this order: (1) **Membership NFT** – If the event's `spaceId` is the space's contract address (0x…), the bot uses on-chain membership NFT holders (everyone who joined that town and minted a membership). (2) **Channel / space API** – Otherwise it uses channel members, then space members from the API. For full eligibility use a context where `spaceId` is the space contract address when available.
+- `AIRDROP_MEMBERSHIP_NFT_ADDRESS` - When set to an ERC-721 contract address (e.g. your space's membership NFT), fixed `/drop` uses **only** current holders of that NFT as recipients.
+
+**Fixed drop recipients** – (1) **Env NFT** – If `AIRDROP_MEMBERSHIP_NFT_ADDRESS` is set, the bot uses current holders of that contract. (2) **spaceId as contract** – Else if the event's `spaceId` is the space's contract address (0x…), it uses that contract's holders. (3) **Channel / space API** – Otherwise channel members, then space members from the API.
 
 # Usage
 
