@@ -40,6 +40,10 @@ Required variables in `.env`:
 - `JWT_SECRET` - JWT secret for webhook authentication
 - `PORT` - Port to run the bot on (optional, defaults to 5123)
 
+Optional:
+
+- `AIRDROP_EXCLUDE_ADDRESSES` - Comma-separated addresses to exclude from fixed `/drop` (e.g. other bots in the chat). The airdrop bot excludes its own addresses automatically; use this to exclude additional wallets such as another bot’s gas wallet.
+
 # Usage
 
 Once the bot is running, installed to a space and added to a channel:

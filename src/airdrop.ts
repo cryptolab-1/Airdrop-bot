@@ -234,26 +234,32 @@ export async function uniqueTownsWallets(
 
 /**
  * For fixed drops: get channel/space member userIds, resolve each to wallet via
- * getSmartAccountFromUserId, exclude the bot, and dedupe by final wallet address
- * so each person receives exactly once (fixes "2 addresses when alone" when the
- * same user appears as both wallet id and linked account in memberships).
+ * getSmartAccountFromUserId, exclude the bot (and any extra addresses), and dedupe
+ * by final wallet address so each person receives exactly once.
+ * @param excludeAddresses - Optional list of addresses to exclude (e.g. other bots in the chat)
  */
 export async function getUniqueRecipientAddresses(
     bot: AnyBot,
-    userIds: string[]
+    userIds: string[],
+    opts?: { excludeAddresses?: string[] }
 ): Promise<Address[]> {
     const botApp = ((bot as { appAddress?: string }).appAddress ?? '').toLowerCase()
     const botId = ((bot as { botId?: string }).botId ?? '').toLowerCase()
+    const extra = new Set(
+        (opts?.excludeAddresses ?? [])
+            .map((a) => a.trim().toLowerCase())
+            .filter((a) => /^0x[a-f0-9]{40}$/.test(a))
+    )
     const seen = new Set<string>()
     const out: Address[] = []
     for (const uid of userIds) {
         const w = uid.toLowerCase()
-        if (w === botApp || w === botId) continue
+        if (w === botApp || w === botId || extra.has(w)) continue
         const addr = await getSmartAccountFromUserId(bot as Bot<BotCommand[]>, {
             userId: uid as Address,
         })
         const wallet = ((addr ?? uid) as string).toLowerCase()
-        if (seen.has(wallet)) continue
+        if (seen.has(wallet) || extra.has(wallet)) continue
         seen.add(wallet)
         out.push((addr ?? (uid as Address)) as Address)
     }

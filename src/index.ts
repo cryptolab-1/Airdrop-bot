@@ -22,7 +22,6 @@ import {
     findReactionAirdrop,
     isJoinReaction,
     joinEmoji,
-    uniqueTownsWallets,
 } from './airdrop'
 
 const bot = await makeTownsBot(process.env.APP_PRIVATE_DATA!, process.env.JWT_SECRET!, {
@@ -164,8 +163,13 @@ bot.onSlashCommand('drop', async (handler, event) => {
         // Use snapshot API per Towns docs: bot.snapshot.getSpaceMemberships(spaceId); fallback to channel stream view
         let userIds = await getSpaceMemberIds(bot as AnyBot, spaceId)
         if (userIds.length === 0) userIds = await getChannelMemberIds(bot as AnyBot, channelId)
-        // Resolve to wallets, exclude bot, dedupe by wallet so each person receives once (fixes "2 when alone")
-        const memberAddresses = await getUniqueRecipientAddresses(bot as AnyBot, userIds)
+        const excludeAddresses = (process.env.AIRDROP_EXCLUDE_ADDRESSES ?? '')
+            .split(',')
+            .map((s) => s.trim())
+            .filter(Boolean)
+        const memberAddresses = await getUniqueRecipientAddresses(bot as AnyBot, userIds, {
+            excludeAddresses: excludeAddresses.length > 0 ? excludeAddresses : undefined,
+        })
         if (memberAddresses.length === 0) {
             await handler.sendMessage(
                 channelId,
@@ -281,20 +285,23 @@ bot.onReaction(async (handler, event) => {
             )
             return
         }
-        // Dedupe: keep Towns wallet when same person appears as wallet + linked account
-        let recipientAddresses = await uniqueTownsWallets(bot as AnyBot, reactors)
-        recipientAddresses = filterOutBotRecipients(recipientAddresses)
+        const excludeAddresses = (process.env.AIRDROP_EXCLUDE_ADDRESSES ?? '')
+            .split(',')
+            .map((s) => s.trim())
+            .filter(Boolean)
+        const recipientAddresses = await getUniqueRecipientAddresses(bot as AnyBot, reactors, {
+            excludeAddresses: excludeAddresses.length > 0 ? excludeAddresses : undefined,
+        })
         if (recipientAddresses.length === 0) {
             await handler.sendMessage(channelId, 'No reactors to distribute to (or only bot).', {
                 threadId,
             })
             return
         }
-        // Validate: recipient count should match reactor count (after filtering)
         if (recipientAddresses.length !== reactors.length) {
             await handler.sendMessage(
                 channelId,
-                `Warning: ${reactors.length} reactors but only ${recipientAddresses.length} valid addresses. Some reactors may not have linked wallets.`,
+                `Note: ${reactors.length} reactor(s) → **${recipientAddresses.length}** recipient(s) (excluded bots/duplicates).`,
                 { threadId, mentions: [{ userId: airdrop.creatorId, displayName: 'Creator' }] },
             )
         }
@@ -346,6 +353,11 @@ bot.onReaction(async (handler, event) => {
     }
     if (isJoinReaction(reaction) && airdrop) {
         airdrop.reactorIds.add(userId)
+        await handler.sendMessage(
+            channelId,
+            `<@${userId}> joined the drop.`,
+            { threadId: airdrop.threadId, mentions: [{ userId, displayName: 'User' }] },
+        )
     }
 })
 
