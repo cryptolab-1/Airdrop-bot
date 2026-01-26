@@ -388,7 +388,7 @@ bot.onInteractionResponse(async (handler, event) => {
         const { eventId: threadRootId } = await handler.sendMessage(
             channelId,
             `**$TOWNS Airdrop** — continue below.`,
-            { mentions: [{ userId: pending.creatorId, displayName: 'Creator' }] },
+            { mentions: [{ atChannel: true }, { userId: pending.creatorId, displayName: 'Creator' }] },
         )
         const threadId = threadRootId
 
