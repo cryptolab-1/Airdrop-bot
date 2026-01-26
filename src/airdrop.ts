@@ -5,10 +5,11 @@
  */
 
 import type { Address } from 'viem'
-import { parseEther, formatEther } from 'viem'
+import { parseEther, formatEther, parseAbiItem } from 'viem'
 import { erc20Abi } from 'viem'
 import { encodeFunctionData } from 'viem'
 import { multicall3Abi } from 'viem'
+import { getLogs, getBlockNumber } from 'viem/actions'
 import { getSmartAccountFromUserId, SnapshotGetter } from '@towns-protocol/bot'
 import type { Bot, BotCommand } from '@towns-protocol/bot'
 
@@ -178,6 +179,55 @@ export async function getSpaceMemberIds(bot: AnyBot, spaceId: string): Promise<s
     } catch {
         return []
     }
+}
+
+/** ERC-721 Transfer topic for membership NFT. */
+const ERC721_TRANSFER = parseAbiItem(
+    'event Transfer(address indexed from, address indexed to, uint256 indexed tokenId)'
+)
+const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000' as Address
+
+/**
+ * Get current membership NFT holder addresses for a space from on-chain Transfer events.
+ * spaceId in event payloads is the unique identifier for the Space; each Space has its own contract address.
+ * When that spaceId is the contract address (0x…), each joiner has minted a membership NFT on that contract.
+ * We treat current token holders as eligible wallets.
+ * Returns empty array on RPC/parse errors or if the contract has no transfers.
+ */
+export async function getMembershipNftHolderAddresses(
+    bot: AnyBot,
+    spaceContractAddress: Address
+): Promise<Address[]> {
+    const viem = (bot as { viem?: { request?: unknown } }).viem
+    if (!viem) return []
+    try {
+        const toBlock = await getBlockNumber(viem)
+        const chunk = 20_000n
+        const tokenToOwner = new Map<string, string>()
+        for (let from = 0n; from <= toBlock; from += chunk) {
+            const to = from + chunk > toBlock ? toBlock : from + chunk - 1n
+            const logs = await getLogs(viem, {
+                address: spaceContractAddress,
+                event: ERC721_TRANSFER,
+                fromBlock: from,
+                toBlock: to,
+            })
+            for (const log of logs) {
+                const tokenId = log.args?.tokenId
+                const toAddr = log.args?.to
+                if (tokenId != null && toAddr && (toAddr as string).toLowerCase() !== ZERO_ADDRESS.toLowerCase())
+                    tokenToOwner.set(String(tokenId), (toAddr as string).toLowerCase())
+            }
+        }
+        return [...new Set(tokenToOwner.values())].map((a) => a as Address)
+    } catch {
+        return []
+    }
+}
+
+/** True if s looks like an Ethereum address (0x + 40 hex). */
+export function isEthAddress(s: string): boolean {
+    return /^0x[a-fA-F0-9]{40}$/.test(s)
 }
 
 /**

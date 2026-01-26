@@ -15,6 +15,8 @@ import {
     reactionAirdrops,
     getChannelMemberIds,
     getSpaceMemberIds,
+    getMembershipNftHolderAddresses,
+    isEthAddress,
     getUniqueRecipientAddresses,
     encodeTransfer,
     chunkRecipients,
@@ -160,17 +162,27 @@ bot.onSlashCommand('drop', async (handler, event) => {
     const totalRaw = parseEther(amount.toString())
 
     if (!isReact) {
-        // Channel-first: people who joined this channel are the real participants (resolvable wallets).
-        // Space memberships can include stale or non-wallet ids (e.g. display/linked data), so use as fallback only.
-        let userIds = await getChannelMemberIds(bot as AnyBot, channelId)
-        if (userIds.length === 0) userIds = await getSpaceMemberIds(bot as AnyBot, spaceId)
         const excludeAddresses = (process.env.AIRDROP_EXCLUDE_ADDRESSES ?? '')
             .split(',')
             .map((s) => s.trim())
             .filter(Boolean)
-        const memberAddresses = await getUniqueRecipientAddresses(bot as AnyBot, userIds, {
-            excludeAddresses: excludeAddresses.length > 0 ? excludeAddresses : undefined,
-        })
+        let memberAddresses: Address[] = []
+        // spaceId is the unique identifier for the Space (see Events docs); each Space has its own contract address.
+        // When spaceId is that address (0x…), use membership NFT holders for eligibility (on-chain wallets).
+        if (isEthAddress(spaceId)) {
+            const nftHolders = await getMembershipNftHolderAddresses(bot as AnyBot, spaceId as Address)
+            memberAddresses = await getUniqueRecipientAddresses(bot as AnyBot, nftHolders.map((a) => a as string), {
+                excludeAddresses: excludeAddresses.length > 0 ? excludeAddresses : undefined,
+                onlyResolved: false,
+            })
+        }
+        if (!isEthAddress(spaceId) || memberAddresses.length === 0) {
+            let userIds = await getChannelMemberIds(bot as AnyBot, channelId)
+            if (userIds.length === 0) userIds = await getSpaceMemberIds(bot as AnyBot, spaceId)
+            memberAddresses = await getUniqueRecipientAddresses(bot as AnyBot, userIds, {
+                excludeAddresses: excludeAddresses.length > 0 ? excludeAddresses : undefined,
+            })
+        }
         if (memberAddresses.length === 0) {
             await handler.sendMessage(
                 channelId,
