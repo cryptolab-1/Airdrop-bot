@@ -85,9 +85,17 @@ async function checkBalance(creator: Address, totalNeeded: bigint): Promise<{ ok
     return { ok: true }
 }
 
+const DISTRIBUTION_RETRIES = Math.max(1, Math.min(10, parseInt(process.env.AIRDROP_DISTRIBUTION_RETRIES ?? '4', 10) || 4))
+const DISTRIBUTION_RETRY_DELAY_MS = Math.max(500, parseInt(process.env.AIRDROP_DISTRIBUTION_RETRY_DELAY_MS ?? '2000', 10) || 2000)
+
+function sleep(ms: number): Promise<void> {
+    return new Promise((r) => setTimeout(r, ms))
+}
+
 /**
  * Run distribution from the bot treasury using ERC-7821 execute().
  * Only treasury (bot.appAddress) is supported.
+ * Retries the ERC-7821 support check (and then execute) when it fails transiently.
  */
 async function runBotDistribution(
     recipients: Address[],
@@ -100,27 +108,41 @@ async function runBotDistribution(
     if (!treasury || fromAddress.toLowerCase() !== treasury.toLowerCase() || !account) {
         return { ok: false, error: 'Distribution only supported from bot treasury (bot.appAddress).' }
     }
-    try {
-        const ok = await supportsExecutionMode(bot.viem, { address: treasury })
-        if (!ok) return { ok: false, error: 'Treasury does not support ERC-7821 execute().' }
-        const batches = chunkRecipients(recipients)
-        for (const batch of batches) {
-            const hash = await executeErc7821(bot.viem, {
-                address: treasury,
-                account: account as any,
-                calls: batch.map((to) => ({
-                    to: TOWNS_ADDRESS as Address,
-                    abi: erc20Abi,
-                    functionName: 'transfer',
-                    args: [to, amountPer],
-                })),
-            })
-            await waitForTransactionReceipt(bot.viem, { hash: hash as `0x${string}` })
+    const batches = chunkRecipients(recipients)
+    for (let attempt = 0; attempt < DISTRIBUTION_RETRIES; attempt++) {
+        try {
+            const ok = await supportsExecutionMode(bot.viem, { address: treasury })
+            if (!ok) {
+                if (attempt < DISTRIBUTION_RETRIES - 1) {
+                    await sleep(DISTRIBUTION_RETRY_DELAY_MS)
+                    continue
+                }
+                return { ok: false, error: 'Treasury does not support ERC-7821 execute().' }
+            }
+            for (const batch of batches) {
+                const hash = await executeErc7821(bot.viem, {
+                    address: treasury,
+                    account: account as any,
+                    calls: batch.map((to) => ({
+                        to: TOWNS_ADDRESS as Address,
+                        abi: erc20Abi,
+                        functionName: 'transfer',
+                        args: [to, amountPer],
+                    })),
+                })
+                await waitForTransactionReceipt(bot.viem, { hash: hash as `0x${string}` })
+            }
+            return { ok: true }
+        } catch (e) {
+            const err = e instanceof Error ? e.message : String(e)
+            if (attempt < DISTRIBUTION_RETRIES - 1) {
+                await sleep(DISTRIBUTION_RETRY_DELAY_MS)
+                continue
+            }
+            return { ok: false, error: err }
         }
-        return { ok: true }
-    } catch (e) {
-        return { ok: false, error: e instanceof Error ? e.message : String(e) }
     }
+    return { ok: false, error: 'Treasury does not support ERC-7821 execute().' }
 }
 
 bot.onSlashCommand('help', async (handler, { channelId }) => {

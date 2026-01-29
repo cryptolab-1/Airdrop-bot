@@ -48,6 +48,8 @@ Optional:
 - `AIRDROP_NFT_TIMEOUT_MS` – Timeout per attempt in ms (default 30000).
 - `AIRDROP_NFT_RETRIES` – Number of attempts before falling back to event scan (default 3).
 - `AIRDROP_NFT_RETRY_DELAY_MS` – Delay between retries in ms (default 3000).
+- `AIRDROP_DISTRIBUTION_RETRIES` – Retries for ERC-7821 check and distribution (default 4).
+- `AIRDROP_DISTRIBUTION_RETRY_DELAY_MS` – Delay between distribution retries in ms (default 2000).
 
 **Fixed `/drop`** – Uses only the membership NFT: set `AIRDROP_MEMBERSHIP_NFT_ADDRESS` in `.env`. The bot fetches current holders (totalSupply + ownerOf) with retries and a longer timeout, then excludes the bot and `AIRDROP_EXCLUDE_ADDRESSES`.
 
