@@ -1,11 +1,7 @@
 /**
- * $TOWNS Airdrop Mini App - API Server
+ * $TOWNS Airdrop Bot + Mini App
  * 
- * This server provides:
- * - REST API for airdrop management
- * - WebSocket for real-time updates
- * - Farcaster mini app manifest
- * - Bot treasury for distribution
+ * Slash command /drop opens the mini app UI for airdrop management.
  */
 
 import { Hono } from 'hono'
@@ -17,10 +13,12 @@ import type { Address } from 'viem'
 import { erc20Abi } from 'viem'
 import { execute as executeErc7821 } from 'viem/experimental/erc7821'
 import { supportsExecutionMode } from 'viem/experimental/erc7821'
+import commands from './commands'
 import {
     TOWNS_ADDRESS,
     type AnyBot,
     formatEther,
+    parseEther,
     getMembershipNftHolderAddresses,
     isEthAddress,
     getUniqueRecipientAddresses,
@@ -28,9 +26,93 @@ import {
 } from './airdrop'
 import { generateManifest, generateEmbedMeta } from './manifest'
 
-// Initialize bot (needed for viem client and treasury)
+// Initialize bot with slash commands
 const bot = await makeTownsBot(process.env.APP_PRIVATE_DATA!, process.env.JWT_SECRET!, {
-    commands: [], // No slash commands in mini app mode
+    commands,
+})
+
+const MINIAPP_URL = process.env.MINIAPP_URL || 'https://airdrop.example.com'
+
+// ============================================================================
+// Slash Commands - Entry point to Mini App
+// ============================================================================
+
+bot.onSlashCommand('help', async (handler, { channelId }) => {
+    await handler.sendMessage(
+        channelId,
+        '**$TOWNS Airdrop Bot**\n\n' +
+        '• `/drop` - Open the airdrop mini app\n' +
+        '• `/drop <amount>` - Quick fixed airdrop to all NFT holders\n' +
+        '• `/drop react <amount>` - Create react-to-join airdrop\n\n' +
+        'The mini app provides a visual interface for creating and managing airdrops.',
+    )
+})
+
+bot.onSlashCommand('drop', async (handler, event) => {
+    const { channelId, userId, args, spaceId, isDm } = event
+    
+    if (isDm) {
+        await handler.sendMessage(channelId, 'Use `/drop` in a space channel.')
+        return
+    }
+
+    // If no arguments, open the mini app
+    if (args.length === 0) {
+        await handler.sendMessage(
+            channelId,
+            '**$TOWNS Airdrop** - Click below to open the airdrop app:',
+            {
+                attachments: [
+                    {
+                        type: 'miniapp',
+                        url: MINIAPP_URL,
+                    },
+                ],
+                mentions: [{ userId, displayName: 'Creator' }],
+            },
+        )
+        return
+    }
+
+    // Quick drop with amount specified
+    const first = args[0]?.toLowerCase()
+    const isReact = first === 'react'
+    const amountStr = isReact ? args[1] : args[0]
+    
+    if (!amountStr) {
+        await handler.sendMessage(
+            channelId,
+            'Usage:\n• `/drop` - Open mini app\n• `/drop <amount>` - Quick fixed drop\n• `/drop react <amount>` - React-to-join drop',
+        )
+        return
+    }
+
+    let amount: number
+    try {
+        amount = parseFloat(amountStr)
+        if (!Number.isFinite(amount) || amount <= 0) throw new Error('invalid')
+    } catch {
+        await handler.sendMessage(channelId, 'Provide a valid positive amount (e.g. `10` or `1.5`).')
+        return
+    }
+
+    // For quick drops, open mini app with pre-filled amount
+    const mode = isReact ? 'react' : 'fixed'
+    const appUrl = `${MINIAPP_URL}?amount=${amount}&mode=${mode}`
+    
+    await handler.sendMessage(
+        channelId,
+        `**$TOWNS Airdrop** - ${formatEther(parseEther(amount.toString()))} $TOWNS ${isReact ? '(react mode)' : '(fixed)'}`,
+        {
+            attachments: [
+                {
+                    type: 'miniapp',
+                    url: appUrl,
+                },
+            ],
+            mentions: [{ userId, displayName: 'Creator' }],
+        },
+    )
 })
 
 // ============================================================================
@@ -158,13 +240,13 @@ async function runBotDistribution(
 }
 
 // ============================================================================
-// Create Hono App
+// Hono App for API + Static Files
 // ============================================================================
 
-const app = new Hono()
+const honoApp = new Hono()
 
 // CORS for mini app
-app.use('/api/*', cors({
+honoApp.use('/api/*', cors({
     origin: '*',
     allowMethods: ['GET', 'POST', 'PUT', 'DELETE'],
     allowHeaders: ['Content-Type'],
@@ -174,17 +256,15 @@ app.use('/api/*', cors({
 // Manifest Endpoints
 // ============================================================================
 
-app.get('/.well-known/farcaster.json', (c) => {
+honoApp.get('/.well-known/farcaster.json', (c) => {
     return c.json(generateManifest())
 })
 
-// Agent metadata for Towns
-app.get('/.well-known/agent-metadata.json', async (c) => {
+honoApp.get('/.well-known/agent-metadata.json', async (c) => {
     return c.json(await bot.getIdentityMetadata())
 })
 
-// Embed meta for sharing
-app.get('/embed-meta', (c) => {
+honoApp.get('/embed-meta', (c) => {
     return c.json(generateEmbedMeta())
 })
 
@@ -193,7 +273,7 @@ app.get('/embed-meta', (c) => {
 // ============================================================================
 
 // Get NFT holder count
-app.get('/api/holders', async (c) => {
+honoApp.get('/api/holders', async (c) => {
     const nftAddress = (process.env.AIRDROP_MEMBERSHIP_NFT_ADDRESS ?? '').trim()
     
     if (!isEthAddress(nftAddress)) {
@@ -224,7 +304,7 @@ app.get('/api/holders', async (c) => {
 })
 
 // Create airdrop
-app.post('/api/airdrop', async (c) => {
+honoApp.post('/api/airdrop', async (c) => {
     try {
         const body = await c.req.json()
         const { mode, totalAmount, creatorAddress } = body
@@ -242,7 +322,6 @@ app.post('/api/airdrop', async (c) => {
             return c.json({ error: 'AIRDROP_MEMBERSHIP_NFT_ADDRESS not configured' }, 500)
         }
         
-        // Get recipients for fixed mode
         let recipientCount = 0
         let participants: string[] = []
         
@@ -288,7 +367,7 @@ app.post('/api/airdrop', async (c) => {
 })
 
 // Get airdrop by ID
-app.get('/api/airdrop/:id', (c) => {
+honoApp.get('/api/airdrop/:id', (c) => {
     const airdrop = airdrops.get(c.req.param('id'))
     if (!airdrop) {
         return c.json({ error: 'Airdrop not found' }, 404)
@@ -297,7 +376,7 @@ app.get('/api/airdrop/:id', (c) => {
 })
 
 // Confirm deposit
-app.post('/api/airdrop/:id/confirm-deposit', async (c) => {
+honoApp.post('/api/airdrop/:id/confirm-deposit', async (c) => {
     const airdrop = airdrops.get(c.req.param('id'))
     if (!airdrop) {
         return c.json({ error: 'Airdrop not found' }, 404)
@@ -311,7 +390,6 @@ app.post('/api/airdrop/:id/confirm-deposit', async (c) => {
             return c.json({ error: 'Missing txHash' }, 400)
         }
         
-        // Verify transaction on-chain
         const receipt = await waitForTransactionReceipt(bot.viem, { hash: txHash as `0x${string}` })
         
         if (receipt.status !== 'success') {
@@ -322,12 +400,9 @@ app.post('/api/airdrop/:id/confirm-deposit', async (c) => {
         airdrop.status = 'funded'
         airdrop.updatedAt = Date.now()
         
-        // For fixed mode, auto-launch distribution
         if (airdrop.mode === 'fixed' && airdrop.participants.length > 0) {
             airdrop.status = 'distributing'
             broadcastAirdropUpdate(airdrop.id, airdrop)
-            
-            // Run distribution in background
             runDistribution(airdrop).catch(console.error)
         } else {
             broadcastAirdropUpdate(airdrop.id, airdrop)
@@ -341,7 +416,7 @@ app.post('/api/airdrop/:id/confirm-deposit', async (c) => {
 })
 
 // Join airdrop (react mode)
-app.post('/api/airdrop/:id/join', async (c) => {
+honoApp.post('/api/airdrop/:id/join', async (c) => {
     const airdrop = airdrops.get(c.req.param('id'))
     if (!airdrop) {
         return c.json({ error: 'Airdrop not found' }, 404)
@@ -367,7 +442,6 @@ app.post('/api/airdrop/:id/join', async (c) => {
             airdrop.participants.push(userAddress.toLowerCase())
             airdrop.recipientCount = airdrop.participants.length
             
-            // Recalculate amount per recipient
             const totalBigInt = BigInt(airdrop.totalAmount)
             airdrop.amountPerRecipient = (totalBigInt / BigInt(airdrop.recipientCount)).toString()
             airdrop.updatedAt = Date.now()
@@ -383,7 +457,7 @@ app.post('/api/airdrop/:id/join', async (c) => {
 })
 
 // Launch airdrop (react mode)
-app.post('/api/airdrop/:id/launch', async (c) => {
+honoApp.post('/api/airdrop/:id/launch', async (c) => {
     const airdrop = airdrops.get(c.req.param('id'))
     if (!airdrop) {
         return c.json({ error: 'Airdrop not found' }, 404)
@@ -401,14 +475,13 @@ app.post('/api/airdrop/:id/launch', async (c) => {
     airdrop.updatedAt = Date.now()
     broadcastAirdropUpdate(airdrop.id, airdrop)
     
-    // Run distribution in background
     runDistribution(airdrop).catch(console.error)
     
     return c.json(airdropToResponse(airdrop))
 })
 
 // Cancel airdrop
-app.post('/api/airdrop/:id/cancel', async (c) => {
+honoApp.post('/api/airdrop/:id/cancel', async (c) => {
     const airdrop = airdrops.get(c.req.param('id'))
     if (!airdrop) {
         return c.json({ error: 'Airdrop not found' }, 404)
@@ -438,7 +511,6 @@ async function runDistribution(airdrop: Airdrop) {
         airdrop.status = 'completed'
         airdrop.distributionTxHash = result.txHash
     } else {
-        // Revert to funded status on failure
         airdrop.status = 'funded'
         console.error('Distribution failed:', result.error)
     }
@@ -448,55 +520,25 @@ async function runDistribution(airdrop: Airdrop) {
 }
 
 // ============================================================================
-// WebSocket Handler (for Bun)
-// ============================================================================
-
-// Note: Hono with Bun uses a different WebSocket upgrade pattern
-// This will be handled in the Bun server configuration
-
-// ============================================================================
 // Static Files (for production)
 // ============================================================================
 
-// Serve mini app static files in production
-app.use('/*', serveStatic({ root: './miniapp/dist' }))
-
-// Fallback to index.html for SPA routing
-app.get('*', serveStatic({ path: './miniapp/dist/index.html' }))
+honoApp.use('/*', serveStatic({ root: './miniapp/dist' }))
+honoApp.get('*', serveStatic({ path: './miniapp/dist/index.html' }))
 
 // ============================================================================
-// Export
+// Start Bot + Extend with Hono routes
 // ============================================================================
 
+const app = bot.start()
+
+// Mount Hono routes onto the bot's app
+app.route('/', honoApp)
+
+// Export Bun server configuration
+// hostname 0.0.0.0 is required for cloud deployments (Render, etc.)
 export default {
     port: parseInt(process.env.PORT ?? '3000', 10),
+    hostname: '0.0.0.0',
     fetch: app.fetch,
-    websocket: {
-        open(ws: WebSocket & { data?: { airdropId?: string } }) {
-            const airdropId = ws.data?.airdropId
-            if (airdropId) {
-                if (!wsConnections.has(airdropId)) {
-                    wsConnections.set(airdropId, new Set())
-                }
-                wsConnections.get(airdropId)!.add(ws)
-            }
-        },
-        message(ws: WebSocket & { data?: { airdropId?: string } }, message: string) {
-            // Handle ping/pong or other messages if needed
-            try {
-                const data = JSON.parse(message)
-                if (data.type === 'ping') {
-                    ws.send(JSON.stringify({ type: 'pong' }))
-                }
-            } catch {
-                // Ignore invalid messages
-            }
-        },
-        close(ws: WebSocket & { data?: { airdropId?: string } }) {
-            const airdropId = ws.data?.airdropId
-            if (airdropId) {
-                wsConnections.get(airdropId)?.delete(ws)
-            }
-        },
-    },
 }
