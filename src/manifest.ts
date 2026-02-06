@@ -32,9 +32,9 @@ export function generateManifest(): MiniAppManifest {
   // Generate accountAssociation using Farcaster developer tools:
   // https://developers.farcaster.xyz/
   const accountAssociation = {
-    header: process.env.FARCASTER_MANIFEST_HEADER || '',
-    payload: process.env.FARCASTER_MANIFEST_PAYLOAD || '',
-    signature: process.env.FARCASTER_MANIFEST_SIGNATURE || '',
+    header: (process.env.FARCASTER_MANIFEST_HEADER || '').trim(),
+    payload: (process.env.FARCASTER_MANIFEST_PAYLOAD || '').trim(),
+    signature: (process.env.FARCASTER_MANIFEST_SIGNATURE || '').trim(),
   }
 
   return {
