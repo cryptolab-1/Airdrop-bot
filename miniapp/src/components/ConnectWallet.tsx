@@ -13,6 +13,10 @@ export function ConnectWallet() {
       // Use Farcaster SDK wallet provider
       try {
         const provider = await sdk.wallet.getEthereumProvider()
+        if (!provider) {
+          console.error('No provider available')
+          return
+        }
         const accounts = await provider.request({ method: 'eth_requestAccounts' })
         if (accounts.length > 0) {
           // Wagmi will pick up the connected account

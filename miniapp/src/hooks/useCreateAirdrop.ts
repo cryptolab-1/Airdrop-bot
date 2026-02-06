@@ -1,6 +1,5 @@
 import { useState } from 'react'
-import { useAccount, useWriteContract, useWaitForTransactionReceipt } from 'wagmi'
-import { encodeFunctionData, parseEther } from 'viem'
+import { useAccount, useWriteContract } from 'wagmi'
 import { TOWNS_ADDRESS, ERC20_ABI } from '../config/wagmi'
 import type { AirdropData } from '../App'
 

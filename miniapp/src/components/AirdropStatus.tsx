@@ -1,4 +1,3 @@
-import { useEffect } from 'react'
 import { formatEther } from 'viem'
 import type { AirdropData } from '../App'
 import { useAirdropWebSocket } from '../hooks/useAirdropWebSocket'

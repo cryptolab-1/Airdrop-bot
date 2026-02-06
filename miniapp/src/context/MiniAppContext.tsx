@@ -32,10 +32,10 @@ export function MiniAppProvider({ children }: { children: ReactNode }) {
     async function initMiniApp() {
       try {
         // Check if we're running inside a Farcaster client
-        const context = sdk.context
+        const context = await sdk.context
         
         if (context?.user) {
-          setUser(context.user)
+          setUser(context.user as MiniAppUser)
           setIsInMiniApp(true)
           
           if (context.client?.safeAreaInsets) {

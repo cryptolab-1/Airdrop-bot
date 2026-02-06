@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { parseEther, formatEther } from 'viem'
+import { parseEther } from 'viem'
 import { useAccount } from 'wagmi'
 import type { AirdropData } from '../App'
 import { useCreateAirdrop } from '../hooks/useCreateAirdrop'
