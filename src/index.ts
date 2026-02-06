@@ -1,88 +1,102 @@
+/**
+ * $TOWNS Airdrop Mini App - API Server
+ * 
+ * This server provides:
+ * - REST API for airdrop management
+ * - WebSocket for real-time updates
+ * - Farcaster mini app manifest
+ * - Bot treasury for distribution
+ */
+
+import { Hono } from 'hono'
+import { cors } from 'hono/cors'
+import { serveStatic } from 'hono/bun'
 import { makeTownsBot } from '@towns-protocol/bot'
 import { readContract, waitForTransactionReceipt } from 'viem/actions'
 import type { Address } from 'viem'
-import { encodeFunctionData, erc20Abi, multicall3Abi } from 'viem'
+import { erc20Abi } from 'viem'
 import { execute as executeErc7821 } from 'viem/experimental/erc7821'
 import { supportsExecutionMode } from 'viem/experimental/erc7821'
-import commands from './commands'
 import {
     TOWNS_ADDRESS,
     type AnyBot,
-    type ReactionAirdrop,
     formatEther,
-    parseEther,
-    pendingDrops,
-    reactionAirdrops,
     getMembershipNftHolderAddresses,
     isEthAddress,
     getUniqueRecipientAddresses,
-    encodeTransfer,
     chunkRecipients,
-    deleteReactionAirdrop,
-    findReactionAirdrop,
-    isJoinReaction,
-    joinEmoji,
 } from './airdrop'
+import { generateManifest, generateEmbedMeta } from './manifest'
 
+// Initialize bot (needed for viem client and treasury)
 const bot = await makeTownsBot(process.env.APP_PRIVATE_DATA!, process.env.JWT_SECRET!, {
-    commands,
+    commands: [], // No slash commands in mini app mode
 })
 
-/** Pending deposit: creator sent total to bot; we run distribution from bot. */
-type PendingDeposit = {
-    channelId: string
-    threadId: string
-    recipients: Address[]
-    amountPer: bigint
-    totalRaw: bigint
-    creatorId: Address
-    mode: 'fixed' | 'reaction'
-    messageId?: string
-    /** Treasury (bot.appAddress) that received the deposit; distribution runs from here. */
-    depositTarget: Address
-}
-const pendingDeposits = new Map<Address, PendingDeposit>()
+// ============================================================================
+// Types
+// ============================================================================
 
-/** Deposit target is always bot.appAddress (treasury). Same for both drop fixed and drop react. */
-function getBotDepositTarget(): Address | undefined {
-    return (bot.appAddress as Address | undefined) ?? undefined
+export type AirdropStatus = 'pending' | 'funded' | 'distributing' | 'completed' | 'cancelled'
+
+export type Airdrop = {
+    id: string
+    creatorAddress: string
+    mode: 'fixed' | 'react'
+    totalAmount: string
+    amountPerRecipient: string
+    recipientCount: number
+    status: AirdropStatus
+    participants: string[]
+    depositTxHash?: string
+    distributionTxHash?: string
+    createdAt: number
+    updatedAt: number
 }
 
-function filterOutBotRecipients(addrs: Address[]): Address[] {
-    const a = (bot.appAddress ?? '').toLowerCase()
-    const b = (bot.botId ?? '').toLowerCase()
-    if (!a && !b) return addrs
-    return addrs.filter((x) => {
-        const w = x.toLowerCase()
-        return w !== a && w !== b
+// In-memory store (in production, use a database)
+const airdrops = new Map<string, Airdrop>()
+
+// WebSocket connections per airdrop
+const wsConnections = new Map<string, Set<WebSocket>>()
+
+// ============================================================================
+// Helpers
+// ============================================================================
+
+function generateId(): string {
+    return `airdrop_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`
+}
+
+function broadcastAirdropUpdate(airdropId: string, airdrop: Airdrop) {
+    const connections = wsConnections.get(airdropId)
+    if (!connections) return
+    
+    const message = JSON.stringify({
+        type: 'airdrop_update',
+        airdrop: airdropToResponse(airdrop),
     })
-}
-
-function filterOutBotAndCreator(userIds: string[], creatorId: string): string[] {
-    const creator = creatorId.toLowerCase()
-    const botAddr = (bot.appAddress ?? '').toLowerCase()
-    const botId = (bot.botId ?? '').toLowerCase()
-    return userIds.filter((uid) => {
-        const w = uid.toLowerCase()
-        return w !== creator && w !== botAddr && w !== botId
-    })
-}
-
-async function checkBalance(creator: Address, totalNeeded: bigint): Promise<{ ok: boolean; reason?: string }> {
-    const balance = await readContract(bot.viem, {
-        address: TOWNS_ADDRESS as Address,
-        abi: erc20Abi,
-        functionName: 'balanceOf',
-        args: [creator],
-    })
-
-    if (balance < totalNeeded) {
-        return {
-            ok: false,
-            reason: `Insufficient balance at ${creator.slice(0, 10)}...: have ${formatEther(balance)}, need ${formatEther(totalNeeded)} $TOWNS`,
+    
+    for (const ws of connections) {
+        try {
+            ws.send(message)
+        } catch {
+            connections.delete(ws)
         }
     }
-    return { ok: true }
+}
+
+function airdropToResponse(airdrop: Airdrop) {
+    return {
+        id: airdrop.id,
+        creatorAddress: airdrop.creatorAddress,
+        totalAmount: airdrop.totalAmount,
+        amountPerRecipient: airdrop.amountPerRecipient,
+        recipientCount: airdrop.recipientCount,
+        status: airdrop.status,
+        participants: airdrop.participants,
+        txHash: airdrop.distributionTxHash || airdrop.depositTxHash,
+    }
 }
 
 const DISTRIBUTION_RETRIES = Math.max(1, Math.min(10, parseInt(process.env.AIRDROP_DISTRIBUTION_RETRIES ?? '4', 10) || 4))
@@ -92,23 +106,20 @@ function sleep(ms: number): Promise<void> {
     return new Promise((r) => setTimeout(r, ms))
 }
 
-/**
- * Run distribution from the bot treasury using ERC-7821 execute().
- * Only treasury (bot.appAddress) is supported.
- * Retries the ERC-7821 support check (and then execute) when it fails transiently.
- */
 async function runBotDistribution(
     recipients: Address[],
     amountPer: bigint,
     _totalRaw: bigint,
     fromAddress: Address
-): Promise<{ ok: boolean; error?: string }> {
+): Promise<{ ok: boolean; txHash?: string; error?: string }> {
     const treasury = bot.appAddress as Address | undefined
     const account = (bot.viem as { account?: { address: Address } }).account
     if (!treasury || fromAddress.toLowerCase() !== treasury.toLowerCase() || !account) {
         return { ok: false, error: 'Distribution only supported from bot treasury (bot.appAddress).' }
     }
     const batches = chunkRecipients(recipients)
+    let lastHash: string | undefined
+    
     for (let attempt = 0; attempt < DISTRIBUTION_RETRIES; attempt++) {
         try {
             const ok = await supportsExecutionMode(bot.viem, { address: treasury })
@@ -130,9 +141,10 @@ async function runBotDistribution(
                         args: [to, amountPer],
                     })),
                 })
+                lastHash = hash as string
                 await waitForTransactionReceipt(bot.viem, { hash: hash as `0x${string}` })
             }
-            return { ok: true }
+            return { ok: true, txHash: lastHash }
         } catch (e) {
             const err = e instanceof Error ? e.message : String(e)
             if (attempt < DISTRIBUTION_RETRIES - 1) {
@@ -145,430 +157,346 @@ async function runBotDistribution(
     return { ok: false, error: 'Treasury does not support ERC-7821 execute().' }
 }
 
-bot.onSlashCommand('help', async (handler, { channelId }) => {
-    await handler.sendMessage(
-        channelId,
-        '**Available Commands:**\n\n' +
-            '• `/help` - Show this help message\n\n' +
-            '• `/drop <amount>` - Airdrop total $TOWNS split among all channel members. You sign **once** to send the total to the bot; the bot distributes to everyone.\n\n' +
-            '• `/drop react <amount>` - Airdrop $TOWNS split among users who react 💸 to join; creator reacts ❌ to cancel, 🚀 to launch. Same: sign once to send to the bot, then the bot distributes.',
-    )
+// ============================================================================
+// Create Hono App
+// ============================================================================
+
+const app = new Hono()
+
+// CORS for mini app
+app.use('/api/*', cors({
+    origin: '*',
+    allowMethods: ['GET', 'POST', 'PUT', 'DELETE'],
+    allowHeaders: ['Content-Type'],
+}))
+
+// ============================================================================
+// Manifest Endpoints
+// ============================================================================
+
+app.get('/.well-known/farcaster.json', (c) => {
+    return c.json(generateManifest())
 })
 
-bot.onSlashCommand('drop', async (handler, event) => {
-    const { channelId, userId, args, spaceId, isDm } = event
-    if (isDm || !spaceId) {
-        await handler.sendMessage(channelId, 'Use `/drop` in a space channel.')
-        return
-    }
-    const first = args[0]?.toLowerCase()
-    const isReact = first === 'react'
-    const amountStr = isReact ? args[1] : args[0]
-    if (!amountStr) {
-        await handler.sendMessage(
-            channelId,
-            'Usage: `/drop <amount>` or `/drop react <amount>`. Amounts in $TOWNS.',
-        )
-        return
-    }
-    let amount: number
-    try {
-        amount = parseFloat(amountStr)
-        if (!Number.isFinite(amount) || amount <= 0) throw new Error('invalid')
-    } catch {
-        await handler.sendMessage(channelId, 'Provide a valid positive amount (e.g. `10` or `1.5`).')
-        return
-    }
-    const totalRaw = parseEther(amount.toString())
-
-    if (!isReact) {
-        const excludeAddresses = (process.env.AIRDROP_EXCLUDE_ADDRESSES ?? '')
-            .split(',')
-            .map((s) => s.trim())
-            .filter(Boolean)
-        const nftFromEnv = (process.env.AIRDROP_MEMBERSHIP_NFT_ADDRESS ?? '').trim()
-        if (!isEthAddress(nftFromEnv)) {
-            await handler.sendMessage(
-                channelId,
-                'Set **AIRDROP_MEMBERSHIP_NFT_ADDRESS** in `.env` to your space’s membership NFT contract address (0x…), then try again.',
-                { mentions: [{ userId, displayName: 'Creator' }] },
-            )
-            return
-        }
-        const nftHolders = await getMembershipNftHolderAddresses(bot as AnyBot, nftFromEnv as Address)
-        const memberAddresses = await getUniqueRecipientAddresses(bot as AnyBot, nftHolders.map((a) => a as string), {
-            excludeAddresses: excludeAddresses.length > 0 ? excludeAddresses : undefined,
-            onlyResolved: false,
-        })
-        if (memberAddresses.length === 0) {
-            await handler.sendMessage(
-                channelId,
-                'No holders found for the NFT contract. Check **AIRDROP_MEMBERSHIP_NFT_ADDRESS** or try again in a moment.',
-                { mentions: [{ userId, displayName: 'Creator' }] },
-            )
-            return
-        }
-        pendingDrops.set(userId as `0x${string}`, {
-            mode: 'fixed',
-            totalRaw,
-            channelId,
-            spaceId,
-            creatorId: userId as `0x${string}`,
-            memberAddresses,
-        })
-        const n = memberAddresses.length
-        const per = totalRaw / BigInt(n)
-        const formId = `drop-confirm-fixed-${Date.now()}`
-        await handler.sendInteractionRequest(
-            channelId,
-            {
-                type: 'form',
-                id: formId,
-                title: 'Confirm airdrop',
-                components: [
-                    { id: 'confirm', type: 'button', label: 'Confirm' },
-                    { id: 'cancel', type: 'button', label: 'Cancel' },
-                ],
-                recipient: userId as `0x${string}`,
-            },
-            { threadId: event.threadId, replyId: event.eventId },
-        )
-        await handler.sendMessage(
-            channelId,
-            `You'll distribute **${formatEther(totalRaw)} $TOWNS** total, split among **${n}** members (**${formatEther(per)}** each). You'll sign **${n}** transfer tx(s). Confirm above.`,
-            { mentions: [{ userId, displayName: 'Creator' }] },
-        )
-        return
-    }
-
-    // react mode
-    pendingDrops.set(userId as `0x${string}`, {
-        mode: 'reaction',
-        totalRaw,
-        channelId,
-        spaceId,
-        creatorId: userId as `0x${string}`,
-    })
-    const formId = `drop-confirm-reaction-${Date.now()}`
-    await handler.sendInteractionRequest(
-        channelId,
-        {
-            type: 'form',
-            id: formId,
-            title: 'Confirm airdrop',
-            components: [
-                { id: 'confirm', type: 'button', label: 'Confirm' },
-                { id: 'cancel', type: 'button', label: 'Cancel' },
-            ],
-            recipient: userId as `0x${string}`,
-        },
-        { threadId: event.threadId, replyId: event.eventId },
-    )
-    await handler.sendMessage(
-        channelId,
-        `I'll post an airdrop message; users who react ${joinEmoji()} will share **${formatEther(totalRaw)} $TOWNS**. You react 🚀 to launch, ❌ to cancel. Confirm above.`,
-        { mentions: [{ userId, displayName: 'Creator' }] },
-    )
-})
-
-const CANCEL_EMOJI = '❌'
-const LAUNCH_EMOJI = '🚀'
-
-function isLaunchReaction(r: string): boolean {
-    if (r === LAUNCH_EMOJI) return true
-    const n = (x: string) => x.toLowerCase().replace(/[^a-z0-9]/g, '')
-    return ['rocket', 'launch'].some((s) => n(r) === n(s))
-}
-
-bot.onReaction(async (handler, event) => {
-    const { reaction, channelId, messageId, userId } = event
-    const airdrop = findReactionAirdrop(messageId)
-    if (reaction === CANCEL_EMOJI) {
-        if (airdrop && airdrop.creatorId.toLowerCase() === userId.toLowerCase()) {
-            deleteReactionAirdrop(airdrop)
-            await handler.sendMessage(
-                channelId,
-                'Airdrop cancelled by creator. Tokens remain in your wallet.',
-                { threadId: airdrop.threadId, mentions: [{ userId: airdrop.creatorId, displayName: 'Creator' }] },
-            )
-        }
-        return
-    }
-    if (isLaunchReaction(reaction) && airdrop && airdrop.creatorId.toLowerCase() === userId.toLowerCase()) {
-        // Check if already in progress
-        const existingDep = pendingDeposits.get(userId as `0x${string}`)
-        if (existingDep && existingDep.messageId === airdrop.airdropMessageId) {
-            await handler.sendMessage(
-                channelId,
-                'Airdrop distribution already in progress. Wait for the current tx to complete.',
-                { threadId: airdrop.threadId, mentions: [{ userId: airdrop.creatorId, displayName: 'Creator' }] },
-            )
-            return
-        }
-        const threadId = airdrop.threadId
-        const reactors = Array.from(airdrop.reactorIds)
-        if (reactors.length === 0) {
-            deleteReactionAirdrop(airdrop)
-            await handler.sendMessage(
-                channelId,
-                'No one reacted. Airdrop cancelled. Tokens remain in your wallet.',
-                { threadId, mentions: [{ userId: airdrop.creatorId, displayName: 'Creator' }] },
-            )
-            return
-        }
-        const excludeAddresses = (process.env.AIRDROP_EXCLUDE_ADDRESSES ?? '')
-            .split(',')
-            .map((s) => s.trim())
-            .filter(Boolean)
-        const recipientAddresses = await getUniqueRecipientAddresses(bot as AnyBot, reactors, {
-            excludeAddresses: excludeAddresses.length > 0 ? excludeAddresses : undefined,
-        })
-        if (recipientAddresses.length === 0) {
-            await handler.sendMessage(channelId, 'No reactors to distribute to (or only bot).', {
-                threadId,
-            })
-            return
-        }
-        if (recipientAddresses.length !== reactors.length) {
-            await handler.sendMessage(
-                channelId,
-                `Note: ${reactors.length} reactor(s) → **${recipientAddresses.length}** recipient(s) (excluded bots/duplicates).`,
-                { threadId, mentions: [{ userId: airdrop.creatorId, displayName: 'Creator' }] },
-            )
-        }
-        const amountPer = airdrop.totalRaw / BigInt(recipientAddresses.length)
-        const botAddr = getBotDepositTarget() as `0x${string}` | undefined
-        if (!botAddr) {
-            await handler.sendMessage(
-                channelId,
-                'Bot is not configured for airdrops (no treasury). Contact support.',
-                { threadId, mentions: [{ userId: airdrop.creatorId, displayName: 'Creator' }] },
-            )
-            return
-        }
-        await handler.sendMessage(
-            channelId,
-            `Distributing to **${recipientAddresses.length}** recipients. Sign **once** to send **${formatEther(airdrop.totalRaw)} $TOWNS** to the bot; the bot will then distribute to everyone.`,
-            { threadId, mentions: [{ userId: airdrop.creatorId, displayName: 'Creator' }] },
-        )
-        pendingDeposits.set(userId as `0x${string}`, {
-            channelId,
-            threadId,
-            recipients: recipientAddresses,
-            amountPer,
-            totalRaw: airdrop.totalRaw,
-            creatorId: airdrop.creatorId,
-            mode: 'reaction',
-            messageId: airdrop.airdropMessageId,
-            depositTarget: botAddr,
-        })
-        const transferData = encodeTransfer(botAddr, airdrop.totalRaw)
-        await handler.sendInteractionRequest(
-            channelId,
-            {
-                type: 'transaction',
-                id: `drop-deposit-react-${Date.now()}`,
-                title: 'Send $TOWNS to bot',
-                subtitle: `Transfer ${formatEther(airdrop.totalRaw)} $TOWNS to the airdrop bot`,
-                tx: {
-                    chainId: '8453',
-                    to: TOWNS_ADDRESS as `0x${string}`,
-                    value: '0',
-                    data: transferData,
-                },
-                recipient: userId as `0x${string}`,
-            },
-            { threadId, replyId: event.eventId },
-        )
-        return
-    }
-    if (isJoinReaction(reaction) && airdrop) {
-        airdrop.reactorIds.add(userId)
-        await handler.sendMessage(
-            channelId,
-            `<@${userId}> joined the drop.`,
-            { threadId: airdrop.threadId, mentions: [{ userId, displayName: 'User' }] },
-        )
-    }
-})
-
-bot.onInteractionResponse(async (handler, event) => {
-    const { channelId, userId, response } = event
-    const pl = response.payload.content
-    if (pl?.case === 'form') {
-        const form = pl.value
-        const formId =
-            (form as { requestId?: string }).requestId ?? (form as { id?: string }).id
-        if (!formId?.startsWith('drop-confirm-')) return
-        const pending = pendingDrops.get(userId as `0x${string}`)
-        if (!pending) return
-        let confirmed = false
-        for (const c of form.components ?? []) {
-            if (c.component?.case === 'button' && c.id === 'confirm') {
-                confirmed = true
-                break
-            }
-            if (c.component?.case === 'button' && c.id === 'cancel') {
-                pendingDrops.delete(userId as `0x${string}`)
-                await handler.sendMessage(channelId, 'Airdrop cancelled.')
-                return
-            }
-        }
-        if (!confirmed) return
-
-        const { eventId: threadRootId } = await handler.sendMessage(
-            channelId,
-            `**$TOWNS Airdrop** — continue below.`,
-            { mentions: [{ atChannel: true }, { userId: pending.creatorId, displayName: 'Creator' }] },
-        )
-        const threadId = threadRootId
-
-        if (pending.mode === 'reaction') {
-            pendingDrops.delete(userId as `0x${string}`)
-            const { eventId: msgEventId } = await handler.sendMessage(
-                channelId,
-                `**$TOWNS Airdrop** · React ${joinEmoji()} to join. Total: **${formatEther(pending.totalRaw)} $TOWNS**. Creator: <@${pending.creatorId}>. React ${CANCEL_EMOJI} to cancel · ${LAUNCH_EMOJI} to launch.`,
-                { threadId, mentions: [{ userId: pending.creatorId, displayName: 'Creator' }] },
-            )
-            const airdrop: ReactionAirdrop = {
-                totalRaw: pending.totalRaw,
-                creatorId: pending.creatorId,
-                channelId: pending.channelId,
-                reactorIds: new Set(),
-                airdropMessageId: msgEventId,
-                threadId,
-            }
-            reactionAirdrops.set(msgEventId, airdrop)
-            reactionAirdrops.set(threadId, airdrop)
-            await handler.sendReaction(channelId, threadId, joinEmoji())
-            await handler.sendReaction(channelId, threadId, CANCEL_EMOJI)
-            await handler.sendReaction(channelId, threadId, LAUNCH_EMOJI)
-            await handler.sendReaction(channelId, msgEventId, joinEmoji())
-            await handler.sendReaction(channelId, msgEventId, CANCEL_EMOJI)
-            await handler.sendReaction(channelId, msgEventId, LAUNCH_EMOJI)
-            return
-        }
-
-        const memberAddrs = pending.memberAddresses!
-        const amountPer = pending.totalRaw / BigInt(memberAddrs.length)
-        const botAddr = getBotDepositTarget() as `0x${string}` | undefined
-        pendingDrops.delete(userId as `0x${string}`)
-        if (!botAddr) {
-            await handler.sendMessage(
-                channelId,
-                'Bot is not configured for airdrops (no treasury). Contact support.',
-                { threadId, mentions: [{ userId, displayName: 'Creator' }] },
-            )
-            return
-        }
-        await handler.sendMessage(
-            channelId,
-            `Distributing to **${memberAddrs.length}** members. Sign **once** to send **${formatEther(pending.totalRaw)} $TOWNS** to the bot; the bot will then distribute to everyone.`,
-            { threadId, mentions: [{ userId, displayName: 'Creator' }] },
-        )
-        pendingDeposits.set(userId as `0x${string}`, {
-            channelId,
-            threadId,
-            recipients: memberAddrs,
-            amountPer,
-            totalRaw: pending.totalRaw,
-            creatorId: pending.creatorId,
-            mode: 'fixed',
-            depositTarget: botAddr,
-        })
-        const transferData = encodeTransfer(botAddr, pending.totalRaw)
-        await handler.sendInteractionRequest(
-            channelId,
-            {
-                type: 'transaction',
-                id: `drop-deposit-fixed-${Date.now()}`,
-                title: 'Send $TOWNS to bot',
-                subtitle: `Transfer ${formatEther(pending.totalRaw)} $TOWNS to the airdrop bot`,
-                tx: {
-                    chainId: '8453',
-                    to: TOWNS_ADDRESS as `0x${string}`,
-                    value: '0',
-                    data: transferData,
-                },
-                recipient: userId as `0x${string}`,
-            },
-            { threadId },
-        )
-        return
-    }
-
-    if (pl?.case === 'transaction') {
-        const tx = pl.value as { requestId?: string; id?: string; txHash?: string; error?: string }
-        const uid = userId as `0x${string}`
-
-        const dep = pendingDeposits.get(uid)
-        if (dep) {
-            const threadId = dep.threadId
-            if (tx.error) {
-                pendingDeposits.delete(uid)
-                await handler.sendMessage(
-                    channelId,
-                    `Transaction rejected: ${tx.error}. You can try again.`,
-                    { threadId, mentions: [{ userId: dep.creatorId, displayName: 'Creator' }] },
-                )
-                return
-            }
-            if (!tx.txHash) return
-            let receipt: { status: string }
-            try {
-                receipt = await waitForTransactionReceipt(bot.viem, { hash: tx.txHash as `0x${string}` })
-            } catch (e) {
-                pendingDeposits.delete(uid)
-                await handler.sendMessage(
-                    channelId,
-                    `Failed to verify tx: ${e instanceof Error ? e.message : String(e)}.`,
-                    { threadId, mentions: [{ userId: dep.creatorId, displayName: 'Creator' }] },
-                )
-                return
-            }
-            if (receipt.status !== 'success') {
-                pendingDeposits.delete(uid)
-                await handler.sendMessage(
-                    channelId,
-                    `Deposit tx failed on-chain. [View tx](https://basescan.org/tx/${tx.txHash})`,
-                    { threadId, mentions: [{ userId: dep.creatorId, displayName: 'Creator' }] },
-                )
-                return
-            }
-            pendingDeposits.delete(uid)
-            if (dep.mode === 'reaction' && dep.messageId) {
-                reactionAirdrops.delete(dep.messageId)
-                reactionAirdrops.delete(dep.threadId)
-            }
-            const result = await runBotDistribution(
-                dep.recipients,
-                dep.amountPer,
-                dep.totalRaw,
-                dep.depositTarget,
-            )
-            if (!result.ok) {
-                await handler.sendMessage(
-                    channelId,
-                    `Deposit received but distribution failed: ${result.error}. Contact support — your ${formatEther(dep.totalRaw)} $TOWNS are in the bot.`,
-                    { threadId, mentions: [{ userId: dep.creatorId, displayName: 'Creator' }] },
-                )
-                return
-            }
-            await handler.sendMessage(
-                channelId,
-                `Airdrop done. **${dep.recipients.length}** recipients received **${formatEther(dep.amountPer)} $TOWNS** each.`,
-                { threadId, mentions: [{ userId: dep.creatorId, displayName: 'Creator' }] },
-            )
-            return
-        }
-
-    }
-})
-
-const app = bot.start()
-
+// Agent metadata for Towns
 app.get('/.well-known/agent-metadata.json', async (c) => {
     return c.json(await bot.getIdentityMetadata())
 })
 
-export default app
+// Embed meta for sharing
+app.get('/embed-meta', (c) => {
+    return c.json(generateEmbedMeta())
+})
+
+// ============================================================================
+// API Routes
+// ============================================================================
+
+// Get NFT holder count
+app.get('/api/holders', async (c) => {
+    const nftAddress = (process.env.AIRDROP_MEMBERSHIP_NFT_ADDRESS ?? '').trim()
+    
+    if (!isEthAddress(nftAddress)) {
+        return c.json({ error: 'AIRDROP_MEMBERSHIP_NFT_ADDRESS not configured' }, 500)
+    }
+    
+    try {
+        const holders = await getMembershipNftHolderAddresses(bot as AnyBot, nftAddress as Address)
+        const excludeAddresses = (process.env.AIRDROP_EXCLUDE_ADDRESSES ?? '')
+            .split(',')
+            .map((s) => s.trim())
+            .filter(Boolean)
+        
+        const uniqueRecipients = await getUniqueRecipientAddresses(
+            bot as AnyBot,
+            holders.map((a) => a as string),
+            { excludeAddresses: excludeAddresses.length > 0 ? excludeAddresses : undefined, onlyResolved: false }
+        )
+        
+        return c.json({
+            count: uniqueRecipients.length,
+            botAddress: bot.appAddress,
+        })
+    } catch (err) {
+        console.error('Failed to fetch holders:', err)
+        return c.json({ error: 'Failed to fetch holders' }, 500)
+    }
+})
+
+// Create airdrop
+app.post('/api/airdrop', async (c) => {
+    try {
+        const body = await c.req.json()
+        const { mode, totalAmount, creatorAddress } = body
+        
+        if (!mode || !totalAmount || !creatorAddress) {
+            return c.json({ error: 'Missing required fields' }, 400)
+        }
+        
+        if (!isEthAddress(creatorAddress)) {
+            return c.json({ error: 'Invalid creator address' }, 400)
+        }
+        
+        const nftAddress = (process.env.AIRDROP_MEMBERSHIP_NFT_ADDRESS ?? '').trim()
+        if (!isEthAddress(nftAddress)) {
+            return c.json({ error: 'AIRDROP_MEMBERSHIP_NFT_ADDRESS not configured' }, 500)
+        }
+        
+        // Get recipients for fixed mode
+        let recipientCount = 0
+        let participants: string[] = []
+        
+        if (mode === 'fixed') {
+            const holders = await getMembershipNftHolderAddresses(bot as AnyBot, nftAddress as Address)
+            const excludeAddresses = (process.env.AIRDROP_EXCLUDE_ADDRESSES ?? '')
+                .split(',')
+                .map((s) => s.trim())
+                .filter(Boolean)
+            
+            participants = (await getUniqueRecipientAddresses(
+                bot as AnyBot,
+                holders.map((a) => a as string),
+                { excludeAddresses: excludeAddresses.length > 0 ? excludeAddresses : undefined, onlyResolved: false }
+            )).map(a => a as string)
+            
+            recipientCount = participants.length
+        }
+        
+        const totalBigInt = BigInt(totalAmount)
+        const amountPer = recipientCount > 0 ? totalBigInt / BigInt(recipientCount) : 0n
+        
+        const airdrop: Airdrop = {
+            id: generateId(),
+            creatorAddress,
+            mode,
+            totalAmount,
+            amountPerRecipient: amountPer.toString(),
+            recipientCount,
+            status: 'pending',
+            participants,
+            createdAt: Date.now(),
+            updatedAt: Date.now(),
+        }
+        
+        airdrops.set(airdrop.id, airdrop)
+        
+        return c.json(airdropToResponse(airdrop))
+    } catch (err) {
+        console.error('Failed to create airdrop:', err)
+        return c.json({ error: 'Failed to create airdrop' }, 500)
+    }
+})
+
+// Get airdrop by ID
+app.get('/api/airdrop/:id', (c) => {
+    const airdrop = airdrops.get(c.req.param('id'))
+    if (!airdrop) {
+        return c.json({ error: 'Airdrop not found' }, 404)
+    }
+    return c.json(airdropToResponse(airdrop))
+})
+
+// Confirm deposit
+app.post('/api/airdrop/:id/confirm-deposit', async (c) => {
+    const airdrop = airdrops.get(c.req.param('id'))
+    if (!airdrop) {
+        return c.json({ error: 'Airdrop not found' }, 404)
+    }
+    
+    try {
+        const body = await c.req.json()
+        const { txHash } = body
+        
+        if (!txHash) {
+            return c.json({ error: 'Missing txHash' }, 400)
+        }
+        
+        // Verify transaction on-chain
+        const receipt = await waitForTransactionReceipt(bot.viem, { hash: txHash as `0x${string}` })
+        
+        if (receipt.status !== 'success') {
+            return c.json({ error: 'Transaction failed on-chain' }, 400)
+        }
+        
+        airdrop.depositTxHash = txHash
+        airdrop.status = 'funded'
+        airdrop.updatedAt = Date.now()
+        
+        // For fixed mode, auto-launch distribution
+        if (airdrop.mode === 'fixed' && airdrop.participants.length > 0) {
+            airdrop.status = 'distributing'
+            broadcastAirdropUpdate(airdrop.id, airdrop)
+            
+            // Run distribution in background
+            runDistribution(airdrop).catch(console.error)
+        } else {
+            broadcastAirdropUpdate(airdrop.id, airdrop)
+        }
+        
+        return c.json(airdropToResponse(airdrop))
+    } catch (err) {
+        console.error('Failed to confirm deposit:', err)
+        return c.json({ error: 'Failed to confirm deposit' }, 500)
+    }
+})
+
+// Join airdrop (react mode)
+app.post('/api/airdrop/:id/join', async (c) => {
+    const airdrop = airdrops.get(c.req.param('id'))
+    if (!airdrop) {
+        return c.json({ error: 'Airdrop not found' }, 404)
+    }
+    
+    if (airdrop.mode !== 'react') {
+        return c.json({ error: 'Cannot join fixed airdrop' }, 400)
+    }
+    
+    if (airdrop.status !== 'funded') {
+        return c.json({ error: 'Airdrop not accepting participants' }, 400)
+    }
+    
+    try {
+        const body = await c.req.json()
+        const { userAddress } = body
+        
+        if (!userAddress || !isEthAddress(userAddress)) {
+            return c.json({ error: 'Invalid user address' }, 400)
+        }
+        
+        if (!airdrop.participants.includes(userAddress.toLowerCase())) {
+            airdrop.participants.push(userAddress.toLowerCase())
+            airdrop.recipientCount = airdrop.participants.length
+            
+            // Recalculate amount per recipient
+            const totalBigInt = BigInt(airdrop.totalAmount)
+            airdrop.amountPerRecipient = (totalBigInt / BigInt(airdrop.recipientCount)).toString()
+            airdrop.updatedAt = Date.now()
+            
+            broadcastAirdropUpdate(airdrop.id, airdrop)
+        }
+        
+        return c.json(airdropToResponse(airdrop))
+    } catch (err) {
+        console.error('Failed to join airdrop:', err)
+        return c.json({ error: 'Failed to join airdrop' }, 500)
+    }
+})
+
+// Launch airdrop (react mode)
+app.post('/api/airdrop/:id/launch', async (c) => {
+    const airdrop = airdrops.get(c.req.param('id'))
+    if (!airdrop) {
+        return c.json({ error: 'Airdrop not found' }, 404)
+    }
+    
+    if (airdrop.status !== 'funded') {
+        return c.json({ error: 'Airdrop cannot be launched' }, 400)
+    }
+    
+    if (airdrop.participants.length === 0) {
+        return c.json({ error: 'No participants to distribute to' }, 400)
+    }
+    
+    airdrop.status = 'distributing'
+    airdrop.updatedAt = Date.now()
+    broadcastAirdropUpdate(airdrop.id, airdrop)
+    
+    // Run distribution in background
+    runDistribution(airdrop).catch(console.error)
+    
+    return c.json(airdropToResponse(airdrop))
+})
+
+// Cancel airdrop
+app.post('/api/airdrop/:id/cancel', async (c) => {
+    const airdrop = airdrops.get(c.req.param('id'))
+    if (!airdrop) {
+        return c.json({ error: 'Airdrop not found' }, 404)
+    }
+    
+    if (airdrop.status === 'completed' || airdrop.status === 'distributing') {
+        return c.json({ error: 'Cannot cancel airdrop in current state' }, 400)
+    }
+    
+    airdrop.status = 'cancelled'
+    airdrop.updatedAt = Date.now()
+    broadcastAirdropUpdate(airdrop.id, airdrop)
+    
+    return c.json(airdropToResponse(airdrop))
+})
+
+// Distribution helper
+async function runDistribution(airdrop: Airdrop) {
+    const botAddress = bot.appAddress as Address
+    const amountPer = BigInt(airdrop.amountPerRecipient)
+    const totalRaw = BigInt(airdrop.totalAmount)
+    const recipients = airdrop.participants.map(a => a as Address)
+    
+    const result = await runBotDistribution(recipients, amountPer, totalRaw, botAddress)
+    
+    if (result.ok) {
+        airdrop.status = 'completed'
+        airdrop.distributionTxHash = result.txHash
+    } else {
+        // Revert to funded status on failure
+        airdrop.status = 'funded'
+        console.error('Distribution failed:', result.error)
+    }
+    
+    airdrop.updatedAt = Date.now()
+    broadcastAirdropUpdate(airdrop.id, airdrop)
+}
+
+// ============================================================================
+// WebSocket Handler (for Bun)
+// ============================================================================
+
+// Note: Hono with Bun uses a different WebSocket upgrade pattern
+// This will be handled in the Bun server configuration
+
+// ============================================================================
+// Static Files (for production)
+// ============================================================================
+
+// Serve mini app static files in production
+app.use('/*', serveStatic({ root: './miniapp/dist' }))
+
+// Fallback to index.html for SPA routing
+app.get('*', serveStatic({ path: './miniapp/dist/index.html' }))
+
+// ============================================================================
+// Export
+// ============================================================================
+
+export default {
+    port: parseInt(process.env.PORT ?? '3000', 10),
+    fetch: app.fetch,
+    websocket: {
+        open(ws: WebSocket & { data?: { airdropId?: string } }) {
+            const airdropId = ws.data?.airdropId
+            if (airdropId) {
+                if (!wsConnections.has(airdropId)) {
+                    wsConnections.set(airdropId, new Set())
+                }
+                wsConnections.get(airdropId)!.add(ws)
+            }
+        },
+        message(ws: WebSocket & { data?: { airdropId?: string } }, message: string) {
+            // Handle ping/pong or other messages if needed
+            try {
+                const data = JSON.parse(message)
+                if (data.type === 'ping') {
+                    ws.send(JSON.stringify({ type: 'pong' }))
+                }
+            } catch {
+                // Ignore invalid messages
+            }
+        },
+        close(ws: WebSocket & { data?: { airdropId?: string } }) {
+            const airdropId = ws.data?.airdropId
+            if (airdropId) {
+                wsConnections.get(airdropId)?.delete(ws)
+            }
+        },
+    },
+}

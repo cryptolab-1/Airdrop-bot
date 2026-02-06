@@ -3,6 +3,7 @@ node_modules/
 
 # Build output
 dist/
+miniapp/dist/
 
 # Environment variables
 .env
@@ -31,3 +32,6 @@ coverage/
 # OS
 .DS_Store
 Thumbs.db
+
+# Vite
+miniapp/.vite/

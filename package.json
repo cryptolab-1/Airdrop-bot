@@ -1,14 +1,16 @@
 {
   "name": "airdrop-bot",
-  "version": "0.0.1",
+  "version": "0.1.0",
   "type": "module",
   "main": "src/index.ts",
   "scripts": {
-    "build": "tsc --noEmit",
-    "clean": "rm -rf dist",
+    "build": "cd miniapp && bun install && bun run build",
+    "build:check": "tsc --noEmit",
+    "clean": "rm -rf dist miniapp/dist",
     "dev": "bun run --watch src/index.ts",
-    "lint": "eslint --format unix ./src  --max-warnings=0",
-    "lint:fix": "eslint --format unix ./src  --max-warnings=0 --fix",
+    "dev:miniapp": "cd miniapp && bun run dev",
+    "lint": "eslint --format unix ./src --max-warnings=0",
+    "lint:fix": "eslint --format unix ./src --max-warnings=0 --fix",
     "start": "bun run src/index.ts",
     "typecheck": "tsc --noEmit"
   },
@@ -32,6 +34,7 @@
     "typescript": "~5.8.3"
   },
   "files": [
-    "/dist"
+    "/dist",
+    "/miniapp/dist"
   ]
 }

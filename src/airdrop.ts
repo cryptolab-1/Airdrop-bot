@@ -1,14 +1,10 @@
 /**
- * Airdrop state and helpers for $TOWNS airdrops.
- * - Fixed: total amount split among current holders of the membership NFT (AIRDROP_MEMBERSHIP_NFT_ADDRESS).
- * - Reaction: airdrop active users who react 💸 (money with wings); total split between them.
+ * Airdrop helpers for $TOWNS airdrops.
+ * Core functionality for NFT holder fetching and recipient resolution.
  */
 
 import type { Address } from 'viem'
 import { parseEther, formatEther, parseAbi, parseAbiItem } from 'viem'
-import { erc20Abi } from 'viem'
-import { encodeFunctionData } from 'viem'
-import { multicall3Abi } from 'viem'
 import { getLogs, getBlockNumber, readContract, multicall } from 'viem/actions'
 import { getSmartAccountFromUserId } from '@towns-protocol/bot'
 import type { Bot, BotCommand } from '@towns-protocol/bot'
@@ -16,112 +12,12 @@ import type { Bot, BotCommand } from '@towns-protocol/bot'
 export type AnyBot = Bot<BotCommand[]>
 
 export const TOWNS_ADDRESS = '0x00000000A22C618fd6b4D7E9A335C4B96B189a38' as const
-/** Multicall3 on Base (same address on many chains). */
-export const MULTICALL3_ADDRESS = '0xcA11bde05977b3631167028862bE2a173976CA11' as const
+
 /**
- * Max transfers per multicall batch. Gas-safe limit; tune if needed.
+ * Max transfers per batch. Gas-safe limit; tune if needed.
  * ~65k gas per ERC20 transfer; Base block ~30M → ~400+ possible, we use 80.
  */
 export const MAX_TRANSFERS_PER_BATCH = 80
-/** Money with wings 💸 – react to join reaction airdrops. */
-const JOIN_EMOJI = '💸'
-const JOIN_SHORTCODES = [
-    'money_with_wings',
-    'moneywithwings',
-    'money-with-wings',
-    'dollar',
-    'moneybag',
-    'money_bag',
-    'banknote',
-    'dollar_banknote',
-] as const
-
-export type AirdropMode = 'fixed' | 'reaction'
-
-export type PendingDrop = {
-    mode: AirdropMode
-    totalRaw: bigint
-    channelId: string
-    spaceId: string | null
-    creatorId: Address
-    creatorWallet?: Address
-    memberAddresses?: Address[] // fixed mode: resolved smart accounts
-    amountPer?: bigint
-    /** Batches of recipients for multicall; one tx per batch. */
-    batches?: Address[][]
-    batchIndex?: number // Current batch index (0-based)
-    /** Thread to post follow-ups in (avoid channel spam). */
-    threadId?: string
-}
-
-export type ReactionAirdrop = {
-    totalRaw: bigint
-    creatorId: Address
-    channelId: string
-    reactorIds: Set<string>
-    /** Airdrop message eventId. */
-    airdropMessageId: string
-    /** Thread root; all airdrop msgs live in this thread. */
-    threadId: string
-}
-
-export type PendingCloseDistribute = {
-    recipients: Address[]
-    amountPer: bigint
-    channelId: string
-    messageId: string
-    creatorId: Address
-    creatorWallet: Address
-    /** Batches of recipients for multicall; one tx per batch. */
-    batches: Address[][]
-    batchIndex: number // Current batch index (0-based)
-    /** Thread to post close follow-ups in. */
-    threadId: string
-}
-
-export const pendingDrops = new Map<Address, PendingDrop>()
-export const reactionAirdrops = new Map<string, ReactionAirdrop>()
-export const pendingCloseDistributes = new Map<Address, PendingCloseDistribute>()
-
-/** Remove airdrop from map (indexed by airdrop message and thread root ids). */
-export function deleteReactionAirdrop(airdrop: ReactionAirdrop): void {
-    reactionAirdrops.delete(airdrop.airdropMessageId)
-    reactionAirdrops.delete(airdrop.threadId)
-}
-
-/**
- * Find airdrop by messageId. Tries direct lookup, then checks all airdrops'
- * airdropMessageId, threadId (handles format mismatches).
- */
-export function findReactionAirdrop(messageId: string): ReactionAirdrop | undefined {
-    const direct = reactionAirdrops.get(messageId)
-    if (direct) return direct
-    const trimmed = messageId.trim()
-    if (trimmed !== messageId) {
-        const byTrim = reactionAirdrops.get(trimmed)
-        if (byTrim) return byTrim
-    }
-    for (const a of reactionAirdrops.values()) {
-        if (
-            a.airdropMessageId === messageId ||
-            a.threadId === messageId ||
-            (trimmed && (a.airdropMessageId === trimmed || a.threadId === trimmed))
-        )
-            return a
-    }
-    return undefined
-}
-
-export function joinEmoji(): string {
-    return JOIN_EMOJI
-}
-
-/** Match 💸 or shortcodes like "money_with_wings" (Towns may send either). */
-export function isJoinReaction(r: string): boolean {
-    if (r === JOIN_EMOJI) return true
-    const n = (x: string) => x.toLowerCase().replace(/[^a-z0-9]/g, '')
-    return JOIN_SHORTCODES.some((s) => n(r) === n(s))
-}
 
 /** Minimal ABI to read current holders: totalSupply + ownerOf (same as Basescan "Holders" tab). */
 const ERC721_HOLDERS_ABI = parseAbi([
@@ -279,59 +175,12 @@ export function isEthAddress(s: string): boolean {
 }
 
 /**
- * Resolve user IDs to wallet addresses. Uses linked smart account when available,
- * otherwise falls back to userId (Towns wallet address).
- */
-export async function resolveMemberAddresses(
-    bot: AnyBot,
-    userIds: string[]
-): Promise<Address[]> {
-    const out: Address[] = []
-    for (const uid of userIds) {
-        const addr = await getSmartAccountFromUserId(bot as Bot<BotCommand[]>, {
-            userId: uid as Address,
-        })
-        out.push((addr ?? (uid as Address)))
-    }
-    return out
-}
-
-/**
- * Return only Towns wallet addresses when the same person appears as both
- * Towns wallet and linked smart account. getSmartAccountFromUserId(wallet) returns
- * the smart account; we keep the wallet and drop the smart account when both are
- * in the list so each person receives once at their Towns wallet.
- */
-export async function uniqueTownsWallets(
-    bot: AnyBot,
-    userIds: string[]
-): Promise<Address[]> {
-    if (userIds.length === 0) return []
-    const resolved = new Map<string, string>()
-    for (const uid of userIds) {
-        const addr = await getSmartAccountFromUserId(bot as Bot<BotCommand[]>, {
-            userId: uid as Address,
-        })
-        resolved.set(uid.toLowerCase(), ((addr ?? uid) as string).toLowerCase())
-    }
-    const out: Address[] = []
-    for (const uid of userIds) {
-        const u = uid.toLowerCase()
-        const isSmartAccountOfAnother = [...resolved.entries()].some(
-            ([id, val]) => id !== u && val === u
-        )
-        if (!isSmartAccountOfAnother) out.push(uid as Address)
-    }
-    return out
-}
-
-/**
- * For fixed drops: get channel/space member userIds, resolve each to wallet via
+ * For fixed drops: get NFT holder addresses, resolve each to wallet via
  * getSmartAccountFromUserId, exclude the bot (and any extra addresses), and dedupe
  * by final wallet address so each person receives exactly once.
- * @param excludeAddresses - Optional list of addresses to exclude (e.g. other bots in the chat)
+ * @param excludeAddresses - Optional list of addresses to exclude (e.g. other bots)
  * @param onlyResolved - If true (default), only include userIds that resolve to a Towns wallet
- *   via getSmartAccountFromUserId. Skips ids that return null (e.g. "hex from name" in memberships).
+ *   via getSmartAccountFromUserId. Skips ids that return null.
  */
 export async function getUniqueRecipientAddresses(
     bot: AnyBot,
@@ -364,43 +213,6 @@ export async function getUniqueRecipientAddresses(
 }
 
 /**
- * Encode ERC20 transfer(to, amount). Direct transfer from sender's wallet.
- */
-export function encodeTransfer(to: Address, amountRaw: bigint): `0x${string}` {
-    return encodeFunctionData({
-        abi: erc20Abi,
-        functionName: 'transfer',
-        args: [to, amountRaw],
-    })
-}
-
-/**
- * Encode ERC20 approve(spender, amount). Creator approves Multicall3 so it can transferFrom.
- */
-export function encodeApprove(spender: Address, amountRaw: bigint): `0x${string}` {
-    return encodeFunctionData({
-        abi: erc20Abi,
-        functionName: 'approve',
-        args: [spender, amountRaw],
-    })
-}
-
-/**
- * Encode ERC20 transferFrom(from, to, amount). Multicall3 calls this; from must have approved Multicall3.
- */
-export function encodeTransferFrom(
-    from: Address,
-    to: Address,
-    amountRaw: bigint
-): `0x${string}` {
-    return encodeFunctionData({
-        abi: erc20Abi,
-        functionName: 'transferFrom',
-        args: [from, to, amountRaw],
-    })
-}
-
-/**
  * Chunk recipients into batches of at most MAX_TRANSFERS_PER_BATCH.
  */
 export function chunkRecipients(recipients: Address[]): Address[][] {
@@ -409,60 +221,6 @@ export function chunkRecipients(recipients: Address[]): Address[][] {
         out.push(recipients.slice(i, i + MAX_TRANSFERS_PER_BATCH))
     }
     return out
-}
-
-/** Build Multicall3 aggregate3 calls for transferFrom(creator, to, amountPer). */
-export function buildAggregate3TransferFromCalls(
-    creator: Address,
-    recipients: Address[],
-    amountPer: bigint
-): Array<{ target: Address; allowFailure: false; callData: `0x${string}` }> {
-    return recipients.map((to) => ({
-        target: TOWNS_ADDRESS as Address,
-        allowFailure: false as const,
-        callData: encodeTransferFrom(creator, to, amountPer),
-    }))
-}
-
-/**
- * Encode Multicall3 aggregate3(calls) for a batch of transferFrom(creator, recipient, amountPer).
- * Creator must have approved MULTICALL3_ADDRESS for the total amount.
- */
-export function encodeAggregate3TransferFrom(
-    creator: Address,
-    recipients: Address[],
-    amountPer: bigint
-): `0x${string}` {
-    const calls = buildAggregate3TransferFromCalls(creator, recipients, amountPer)
-    return encodeFunctionData({
-        abi: multicall3Abi,
-        functionName: 'aggregate3',
-        args: [calls],
-    })
-}
-
-/**
- * Encode one Multicall3 call that does approve(Multicall3, totalRaw) then transferFrom(creator, to, amountPer) for each recipient in firstBatch.
- * Used as the first user tx so the client never sees a standalone "approve" that it might render as "send tokens".
- * Target is MULTICALL3_ADDRESS; calldata is aggregate3([approve, ...transferFroms]).
- */
-export function encodeAggregate3ApproveAndFirstBatch(
-    creator: Address,
-    totalRaw: bigint,
-    firstBatch: Address[],
-    amountPer: bigint
-): `0x${string}` {
-    const approveCall = {
-        target: TOWNS_ADDRESS as Address,
-        allowFailure: false as const,
-        callData: encodeApprove(MULTICALL3_ADDRESS as Address, totalRaw),
-    }
-    const transferCalls = buildAggregate3TransferFromCalls(creator, firstBatch, amountPer)
-    return encodeFunctionData({
-        abi: multicall3Abi,
-        functionName: 'aggregate3',
-        args: [[approveCall, ...transferCalls]],
-    })
 }
 
 export { parseEther, formatEther }

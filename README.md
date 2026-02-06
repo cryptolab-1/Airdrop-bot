@@ -1,93 +1,184 @@
-# Quickstart Bot
+# $TOWNS Airdrop Mini App
 
-A simple, barebones bot example perfect for beginners learning to build Towns bots.
+A Farcaster mini app for distributing $TOWNS tokens to NFT holders on Base.
 
-# Features
+## Features
 
-- **Slash commands**: `/help`, `/drop`
-- **$TOWNS airdrops**: `/drop <amount>` (total split among all channel members) or `/drop react <amount>` (💸 reactors). Creator reacts ❌ to cancel, 🚀 to launch. Distribution uses **Multicall3** to batch transfers (up to **80** transfers per tx); you sign **1+ batch** tx(s) directly from your wallet (no approval needed).
+- **Fixed Airdrops**: Distribute tokens to all membership NFT holders
+- **React Airdrops**: Let users join by clicking, then distribute to participants
+- **Real-time Updates**: WebSocket-powered live participant list
+- **Single Transaction**: Users sign once to deposit, bot handles distribution
+- **Beautiful UI**: Modern React interface with Tailwind CSS
 
-## Slash Commands
+## Architecture
 
-- `/help` - Show available commands
-- `/drop <amount>` - Airdrop total $TOWNS split among all channel members
-- `/drop react <amount>` - Airdrop $TOWNS split among users who react 💸 to join; creator reacts ❌ to cancel, 🚀 to launch
+```
+┌─────────────────────────────────────────────────────────────┐
+│                     Towns Client                             │
+│  ┌─────────────────────────────────────────────────────┐   │
+│  │              React Mini App (iframe)                 │   │
+│  │  - Create airdrop form                              │   │
+│  │  - Real-time participant list                       │   │
+│  │  - Wallet integration via Farcaster SDK             │   │
+│  └─────────────────────────────────────────────────────┘   │
+└─────────────────────────────────────────────────────────────┘
+                              │
+                              │ REST API + WebSocket
+                              ▼
+┌─────────────────────────────────────────────────────────────┐
+│                    Backend Server (Hono)                     │
+│  - /api/holders          - Get NFT holder count             │
+│  - /api/airdrop          - Create airdrop                   │
+│  - /api/airdrop/:id      - Get status                       │
+│  - /api/airdrop/:id/join - Join (react mode)                │
+│  - /api/airdrop/:id/launch - Launch distribution            │
+│  - /ws                   - Real-time updates                │
+│  - /.well-known/farcaster.json - Mini app manifest          │
+└─────────────────────────────────────────────────────────────┘
+                              │
+                              │ ERC-7821 execute()
+                              ▼
+┌─────────────────────────────────────────────────────────────┐
+│                        Base Chain                            │
+│  - $TOWNS Token (0x00000000A22C618fd6b4D7E9A335C4B96B189a38) │
+│  - Membership NFT Contract                                   │
+│  - Bot Treasury (smart account)                              │
+└─────────────────────────────────────────────────────────────┘
+```
 
-# Setup
+## Setup
 
-1. Copy `.env.sample` to `.env` and fill in your credentials:
+### Prerequisites
 
+- [Bun](https://bun.sh) runtime
+- Towns bot credentials (from [app.towns.com/developer](https://app.towns.com/developer))
+- Farcaster account (for mini app manifest)
+
+### Installation
+
+```bash
+# Clone and install
+git clone <repo>
+cd airdrop-bot
+bun install
+
+# Install mini app dependencies
+cd miniapp
+bun install
+cd ..
+```
+
+### Configuration
+
+1. Copy `.env.sample` to `.env`:
    ```bash
    cp .env.sample .env
    ```
 
-2. Install dependencies:
+2. Fill in required values:
+   - `APP_PRIVATE_DATA`: Bot credentials from Towns developer portal
+   - `JWT_SECRET`: Random string (min 32 chars)
+   - `AIRDROP_MEMBERSHIP_NFT_ADDRESS`: Your space's membership NFT contract
+   - `MINIAPP_URL`: Your deployed URL (for manifest)
 
-   ```bash
-   bun install
-   ```
+3. Generate Farcaster manifest signature:
+   - Go to [developers.farcaster.xyz](https://developers.farcaster.xyz)
+   - Generate account association for your domain
+   - Add `FARCASTER_MANIFEST_*` values to `.env`
 
-3. Run the bot:
-   ```bash
-   bun run dev
-   ```
+### Development
 
-# Environment Variables
+```bash
+# Terminal 1: Run API server
+bun run dev
 
-Required variables in `.env`:
+# Terminal 2: Run mini app dev server
+cd miniapp
+bun run dev
+```
 
-- `APP_PRIVATE_DATA` - Your Towns app private data (base64 encoded)
-- `JWT_SECRET` - JWT secret for webhook authentication
-- `PORT` - Port to run the bot on (optional, defaults to 5123)
+The mini app dev server proxies API requests to the backend.
 
-Optional:
+### Production Build
 
-- `AIRDROP_EXCLUDE_ADDRESSES` - Comma-separated addresses to exclude from fixed `/drop` (e.g. other bots in the chat). The airdrop bot excludes its own addresses automatically; use this to exclude additional wallets such as another bot’s gas wallet.
+```bash
+# Build mini app
+cd miniapp
+bun run build
+cd ..
 
-- `AIRDROP_MEMBERSHIP_NFT_ADDRESS` – **Required for fixed `/drop`.** Your space’s membership NFT contract address (0x…). Recipients are current holders of that NFT only.
-- `AIRDROP_NFT_TIMEOUT_MS` – Timeout per attempt in ms (default 30000).
-- `AIRDROP_NFT_RETRIES` – Number of attempts before falling back to event scan (default 3).
-- `AIRDROP_NFT_RETRY_DELAY_MS` – Delay between retries in ms (default 3000).
-- `AIRDROP_DISTRIBUTION_RETRIES` – Retries for ERC-7821 check and distribution (default 4).
-- `AIRDROP_DISTRIBUTION_RETRY_DELAY_MS` – Delay between distribution retries in ms (default 2000).
+# Start production server (serves both API and static files)
+bun run start
+```
 
-**Fixed `/drop`** – Uses only the membership NFT: set `AIRDROP_MEMBERSHIP_NFT_ADDRESS` in `.env`. The bot fetches current holders (totalSupply + ownerOf) with retries and a longer timeout, then excludes the bot and `AIRDROP_EXCLUDE_ADDRESSES`.
+## Environment Variables
 
-# Usage
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `APP_PRIVATE_DATA` | Yes | Bot credentials |
+| `JWT_SECRET` | Yes | Webhook security (min 32 chars) |
+| `AIRDROP_MEMBERSHIP_NFT_ADDRESS` | Yes | NFT contract for eligibility |
+| `MINIAPP_URL` | Production | Public deployment URL |
+| `FARCASTER_MANIFEST_*` | Production | Manifest signing credentials |
+| `PORT` | No | Server port (default: 3000) |
+| `AIRDROP_EXCLUDE_ADDRESSES` | No | Addresses to exclude (comma-separated) |
+| `AIRDROP_NFT_TIMEOUT_MS` | No | NFT fetch timeout (default: 30000) |
+| `AIRDROP_NFT_RETRIES` | No | NFT fetch retries (default: 3) |
+| `AIRDROP_DISTRIBUTION_RETRIES` | No | Distribution retries (default: 4) |
 
-Once the bot is running, installed to a space and added to a channel:
+## How It Works
 
-**Try the slash commands:**
+### Fixed Airdrop Flow
 
-- `/help` - See all available commands
-- `/drop <amount>` or `/drop react <amount>` - Create an airdrop
-- Reaction airdrops: react 💸 to join, react ❌ (creator only) to cancel, 🚀 (creator only) to launch. You sign **1+ batch** tx(s) (up to 80 transfers per tx).
+1. Creator opens mini app, sees NFT holder count
+2. Creator enters total amount, clicks "Create Airdrop"
+3. Creator signs one transaction to deposit tokens to bot
+4. Bot automatically distributes to all NFT holders
+5. Real-time status updates via WebSocket
 
-# Code Structure
+### React Airdrop Flow
 
-The bot consists of two main files:
+1. Creator creates react airdrop with total amount
+2. Creator signs deposit transaction
+3. Users click "Join" button in mini app
+4. Participant list updates in real-time
+5. Creator clicks "Launch" when ready
+6. Bot distributes to all participants
 
-## `src/commands.ts`
+### Token Flow
 
-Defines the slash commands available to users. Commands registered here appear in the slash command menu.
+```
+Creator Wallet → (deposit) → Bot Treasury → (distribute) → Recipients
+```
 
-## `src/index.ts`
+The bot uses ERC-7821 `execute()` for efficient batch transfers.
 
-Main bot logic with:
+## Deployment
 
-1. **Bot initialization** (`makeTownsBot`) - Creates bot instance with credentials and commands
-2. **Slash command handlers** (`onSlashCommand`) - Handle `/help`, `/drop`
-3. **Reaction handler** (`onReaction`) - Track 💸 join, ❌ cancel, 🚀 launch for reaction airdrops
-4. **Interaction response handler** (`onInteractionResponse`) - Forms and transaction confirmations
-5. **Bot server setup** (`bot.start()`) - Starts the bot server with a Hono HTTP server
+### Render
 
-## Extending this Bot
+1. Create new Web Service
+2. Connect repository
+3. Set build command: `cd miniapp && bun install && bun run build && cd .. && bun install`
+4. Set start command: `bun run start`
+5. Add environment variables
+6. Deploy
 
-To add your own features:
+### Docker
 
-1. **Add a slash command:**
-   - Add to `src/commands.ts`
-   - Go to `src/index.ts` and create a handler with `bot.onSlashCommand('yourcommand', async (handler, event) => { ... })`
+```dockerfile
+FROM oven/bun:1
 
-2. **Handle more events:**
-   - Use `bot.onReaction()`, `bot.onMessageEdit()`, `bot.onChannelJoin()`, etc.
+WORKDIR /app
+COPY . .
+
+RUN bun install
+RUN cd miniapp && bun install && bun run build
+
+EXPOSE 3000
+CMD ["bun", "run", "start"]
+```
+
+## License
+
+MIT
