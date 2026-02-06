@@ -60,11 +60,11 @@ bot.onSlashCommand('drop', async (handler, event) => {
     if (args.length === 0) {
         await handler.sendMessage(
             channelId,
-            '**$TOWNS Airdrop** - Click below to open the airdrop app:',
+            `**$TOWNS Airdrop** - Click to open: ${MINIAPP_URL}`,
             {
                 attachments: [
                     {
-                        type: 'miniapp',
+                        type: 'link',
                         url: MINIAPP_URL,
                     },
                 ],
@@ -102,11 +102,11 @@ bot.onSlashCommand('drop', async (handler, event) => {
     
     await handler.sendMessage(
         channelId,
-        `**$TOWNS Airdrop** - ${formatEther(parseEther(amount.toString()))} $TOWNS ${isReact ? '(react mode)' : '(fixed)'}`,
+        `**$TOWNS Airdrop** - ${formatEther(parseEther(amount.toString()))} $TOWNS ${isReact ? '(react mode)' : '(fixed)'}\n\nOpen: ${appUrl}`,
         {
             attachments: [
                 {
-                    type: 'miniapp',
+                    type: 'link',
                     url: appUrl,
                 },
             ],
