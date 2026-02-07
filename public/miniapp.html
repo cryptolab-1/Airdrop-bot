@@ -442,6 +442,25 @@
                 <div id="customCurrencyGroup" class="form-group hidden">
                     <label>Token Contract Address (Base)</label>
                     <input type="text" id="customCurrencyInput" placeholder="0x... (ERC20 on Base)" />
+                    <div id="tokenInfoDisplay" class="hidden" style="
+                        margin-top:6px;
+                        padding:8px 12px;
+                        background:rgba(139,92,246,0.1);
+                        border:1px solid rgba(139,92,246,0.25);
+                        border-radius:8px;
+                        font-size:13px;
+                        display:flex;
+                        align-items:center;
+                        gap:8px;
+                    ">
+                        <span id="tokenInfoName" style="font-weight:600; color:#c4b5fd;"></span>
+                        <span id="tokenInfoSymbol" style="color:#a78bfa;"></span>
+                        <span id="tokenInfoAddr" style="font-family:'Monaco','Courier New',monospace; font-size:11px; opacity:0.5;"></span>
+                    </span></div>
+                    <div id="tokenInfoLoading" class="hidden" style="margin-top:6px; font-size:12px; opacity:0.6;">
+                        <span class="spinner-sm" style="width:12px; height:12px; border-width:2px;"></span> Looking up token...
+                    </div>
+                    <div id="tokenInfoError" class="hidden" style="margin-top:6px; font-size:12px; color:#fca5a5;"></div>
                     <div class="hint">Paste the ERC20 token contract address on Base chain</div>
                 </div>
 
@@ -791,6 +810,8 @@
         function getTokenLabel() {
             const sel = document.getElementById('currencySelect').value
             if (sel === 'towns') return '$TOWNS'
+            if (resolvedTokenSymbol) return '$' + resolvedTokenSymbol
+            if (resolvedTokenName) return resolvedTokenName
             const custom = document.getElementById('customCurrencyInput').value.trim()
             return custom ? shortAddr(custom) : 'Token'
         }
@@ -1026,8 +1047,17 @@
         document.getElementById('currencySelect').addEventListener('change', () => {
             const val = document.getElementById('currencySelect').value
             const custom = document.getElementById('customCurrencyGroup')
-            if (val === 'custom') custom.classList.remove('hidden')
-            else custom.classList.add('hidden')
+            if (val === 'custom') {
+                custom.classList.remove('hidden')
+            } else {
+                custom.classList.add('hidden')
+                // Clear resolved token info when switching back to $TOWNS
+                resolvedTokenName = ''
+                resolvedTokenSymbol = ''
+                document.getElementById('tokenInfoDisplay').classList.add('hidden')
+                document.getElementById('tokenInfoError').classList.add('hidden')
+            }
+            updatePerPerson()
             validateCreateForm()
         })
 
@@ -1082,7 +1112,53 @@
             document.getElementById('launchAirdropBtn').disabled = !valid
         }
 
-        document.getElementById('customCurrencyInput').addEventListener('input', validateCreateForm)
+        let resolvedTokenName = ''
+        let resolvedTokenSymbol = ''
+        let tokenLookupTimer = null
+
+        document.getElementById('customCurrencyInput').addEventListener('input', () => {
+            validateCreateForm()
+            // Debounce token lookup
+            clearTimeout(tokenLookupTimer)
+            resolvedTokenName = ''
+            resolvedTokenSymbol = ''
+            document.getElementById('tokenInfoDisplay').classList.add('hidden')
+            document.getElementById('tokenInfoError').classList.add('hidden')
+            document.getElementById('tokenInfoLoading').classList.add('hidden')
+
+            const addr = document.getElementById('customCurrencyInput').value.trim()
+            if (/^0x[a-fA-F0-9]{40}$/.test(addr)) {
+                tokenLookupTimer = setTimeout(() => lookupToken(addr), 400)
+            }
+        })
+
+        async function lookupToken(addr) {
+            document.getElementById('tokenInfoLoading').classList.remove('hidden')
+            document.getElementById('tokenInfoError').classList.add('hidden')
+            document.getElementById('tokenInfoDisplay').classList.add('hidden')
+            try {
+                const res = await fetch(`/api/token-info?address=${encodeURIComponent(addr)}`)
+                const data = await res.json()
+                document.getElementById('tokenInfoLoading').classList.add('hidden')
+                if (!res.ok || data.error) {
+                    document.getElementById('tokenInfoError').textContent = data.error || 'Not a valid ERC20 token'
+                    document.getElementById('tokenInfoError').classList.remove('hidden')
+                    return
+                }
+                resolvedTokenName = data.name || ''
+                resolvedTokenSymbol = data.symbol || ''
+                document.getElementById('tokenInfoName').textContent = resolvedTokenName
+                document.getElementById('tokenInfoSymbol').textContent = resolvedTokenSymbol ? `($${resolvedTokenSymbol})` : ''
+                document.getElementById('tokenInfoAddr').textContent = shortAddr(addr)
+                document.getElementById('tokenInfoDisplay').classList.remove('hidden')
+                // Refresh labels that use token name
+                updatePerPerson()
+            } catch {
+                document.getElementById('tokenInfoLoading').classList.add('hidden')
+                document.getElementById('tokenInfoError').textContent = 'Failed to look up token'
+                document.getElementById('tokenInfoError').classList.remove('hidden')
+            }
+        }
 
         document.getElementById('createBackBtn').addEventListener('click', () => {
             showScreen('homeScreen')

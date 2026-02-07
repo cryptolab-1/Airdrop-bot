@@ -865,6 +865,39 @@ async function refreshTaxHolderCount() {
 refreshTaxHolderCount()
 setInterval(refreshTaxHolderCount, 5 * 60 * 1000)
 
+// Token info lookup (name, symbol, decimals)
+const ERC20_META_ABI = parseAbi([
+    'function name() view returns (string)',
+    'function symbol() view returns (string)',
+    'function decimals() view returns (uint8)',
+])
+
+app.get('/api/token-info', async (c) => {
+    const address = (c.req.query('address') ?? '').trim()
+    if (!isEthAddress(address)) {
+        return c.json({ error: 'Invalid address' }, 400)
+    }
+    try {
+        const results = await multicall(bot.viem, {
+            contracts: [
+                { address: address as Address, abi: ERC20_META_ABI, functionName: 'name' },
+                { address: address as Address, abi: ERC20_META_ABI, functionName: 'symbol' },
+                { address: address as Address, abi: ERC20_META_ABI, functionName: 'decimals' },
+            ],
+            allowFailure: true,
+        })
+        const name = results[0].status === 'success' ? results[0].result : null
+        const symbol = results[1].status === 'success' ? results[1].result : null
+        const decimals = results[2].status === 'success' ? Number(results[2].result) : null
+        if (!name && !symbol) {
+            return c.json({ error: 'Not a valid ERC20 token' }, 400)
+        }
+        return c.json({ name, symbol, decimals, address })
+    } catch (err) {
+        return c.json({ error: 'Failed to read token contract' }, 500)
+    }
+})
+
 // Public config (tax rate, etc.)
 app.get('/api/config', (c) => {
     return c.json({
