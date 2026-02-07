@@ -133,6 +133,27 @@ function isEthAddress(s: string): boolean {
     return /^0x[a-fA-F0-9]{40}$/.test(s)
 }
 
+/**
+ * Extract the Ethereum address from a Towns stream ID.
+ * Towns encodes spaceId/channelId as: type-prefix(1 byte) + address(20 bytes) + padding.
+ * E.g. spaceId "106ffe907dceb3a7766a8dbb374a6ffe8ad3c0b50b0000000000000000000000"
+ *   → "0x6ffe907dceb3a7766a8dbb374a6ffe8ad3c0b50b"
+ * If already a valid 0x address, returns as-is.
+ */
+function extractAddressFromStreamId(streamId: string): string | null {
+    if (!streamId) return null
+    // Already a valid Ethereum address
+    if (isEthAddress(streamId)) return streamId
+    // Strip 0x prefix if present
+    const hex = streamId.startsWith('0x') ? streamId.slice(2) : streamId
+    // Encoded format: 2-char type prefix + 40-char address + padding
+    if (hex.length >= 42) {
+        const candidate = '0x' + hex.slice(2, 42)
+        if (isEthAddress(candidate)) return candidate
+    }
+    return null
+}
+
 function generateId(): string {
     return `airdrop_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`
 }
@@ -476,11 +497,20 @@ bot.onSlashCommand('drop', async (handler, event) => {
         return
     }
 
+    // Pass the spaceId in the miniapp URL so the miniapp knows which space to airdrop
+    const spaceId = !isDm ? event.spaceId : null
+    const spaceAddress = spaceId ? extractAddressFromStreamId(spaceId) : null
+    const url = spaceAddress
+        ? `${MINIAPP_URL}${MINIAPP_URL.includes('?') ? '&' : '?'}spaceId=${spaceAddress}`
+        : MINIAPP_URL
+
+    console.log(`[Drop] spaceId=${spaceId}, extracted=${spaceAddress}, url=${url}`)
+
     await handler.sendMessage(channelId, '', {
         attachments: [
             {
                 type: 'miniapp',
-                url: MINIAPP_URL,
+                url,
             },
         ],
     })
@@ -802,11 +832,45 @@ app.get('/.well-known/farcaster.json', (c) => {
 // API Routes
 // ============================================================================
 
+// Cached tax holder count (populated at startup and refreshed periodically)
+let cachedTaxHolderCount = 0
+
+async function refreshTaxHolderCount() {
+    if (AIRDROP_TAX_PERCENT <= 0 || !isEthAddress(AIRDROP_TAX_NFT_ADDRESS)) return
+    try {
+        const excludeAddresses = (process.env.AIRDROP_EXCLUDE_ADDRESSES ?? '')
+            .split(',')
+            .map((s) => s.trim())
+            .filter(Boolean)
+        const rawHolders = await getMembershipNftHolderAddresses(
+            bot as AnyBot,
+            AIRDROP_TAX_NFT_ADDRESS as Address,
+        )
+        const resolved = await getUniqueRecipientAddresses(
+            bot as AnyBot,
+            rawHolders.map((a) => a as string),
+            {
+                excludeAddresses: excludeAddresses.length > 0 ? excludeAddresses : undefined,
+                onlyResolved: false,
+            },
+        )
+        cachedTaxHolderCount = resolved.length
+        console.log(`[Tax] Cached tax holder count: ${cachedTaxHolderCount}`)
+    } catch (err) {
+        console.error('[Tax] Failed to refresh tax holder count:', err)
+    }
+}
+
+// Refresh at startup and every 5 minutes
+refreshTaxHolderCount()
+setInterval(refreshTaxHolderCount, 5 * 60 * 1000)
+
 // Public config (tax rate, etc.)
 app.get('/api/config', (c) => {
     return c.json({
         taxPercent: AIRDROP_TAX_PERCENT,
         taxEnabled: AIRDROP_TAX_PERCENT > 0 && isEthAddress(AIRDROP_TAX_NFT_ADDRESS),
+        taxHolderCount: cachedTaxHolderCount,
         botAddress: bot.appAddress,
     })
 })
@@ -814,11 +878,14 @@ app.get('/api/config', (c) => {
 // Get NFT holder count for a space (pass spaceId as query param)
 app.get('/api/holders', async (c) => {
     // Use spaceId from query param (= the space's membership NFT contract)
+    // The spaceId may be a raw address or an encoded Towns stream ID
     // Fall back to AIRDROP_MEMBERSHIP_NFT_ADDRESS env for backward compat
-    const spaceId = (c.req.query('spaceId') ?? '').trim()
-    const nftAddress = isEthAddress(spaceId)
-        ? spaceId
-        : (process.env.AIRDROP_MEMBERSHIP_NFT_ADDRESS ?? '').trim()
+    const rawSpaceId = (c.req.query('spaceId') ?? '').trim()
+    const extractedAddress = extractAddressFromStreamId(rawSpaceId)
+    const nftAddress = extractedAddress
+        || (process.env.AIRDROP_MEMBERSHIP_NFT_ADDRESS ?? '').trim()
+
+    console.log(`[Holders] rawSpaceId=${rawSpaceId}, extracted=${extractedAddress}, nftAddress=${nftAddress}`)
 
     if (!isEthAddress(nftAddress)) {
         return c.json({ error: 'No valid spaceId provided and AIRDROP_MEMBERSHIP_NFT_ADDRESS not configured' }, 400)
@@ -911,10 +978,13 @@ app.post('/api/airdrop', async (c) => {
 
         if (airdropType === 'space') {
             // Use spaceId from miniapp context as the membership NFT contract
+            // The spaceId may be a raw address or an encoded Towns stream ID
             // Fall back to env variable for backward compat
-            const nftAddress = (spaceId && isEthAddress(spaceId))
-                ? spaceId
-                : (process.env.AIRDROP_MEMBERSHIP_NFT_ADDRESS ?? '').trim()
+            const extractedAddress = spaceId ? extractAddressFromStreamId(spaceId) : null
+            const nftAddress = extractedAddress
+                || (process.env.AIRDROP_MEMBERSHIP_NFT_ADDRESS ?? '').trim()
+
+            console.log(`[Airdrop] spaceId=${spaceId}, extracted=${extractedAddress}, nftAddress=${nftAddress}`)
 
             if (!isEthAddress(nftAddress)) {
                 return c.json({ error: 'No valid spaceId provided and AIRDROP_MEMBERSHIP_NFT_ADDRESS not configured' }, 400)

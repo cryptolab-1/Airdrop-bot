@@ -727,6 +727,32 @@
             document.getElementById(elId).classList.add('hidden')
         }
 
+        /**
+         * Get the space contract address from:
+         * 1. URL query param (passed by /drop command)
+         * 2. context.towns.spaceId (may be encoded stream ID)
+         * Towns encodes spaceId as: type-prefix(2 hex chars) + address(40 hex chars) + padding
+         */
+        function getSpaceAddress() {
+            // 1. From URL query param (already extracted by bot)
+            const urlParams = new URLSearchParams(window.location.search)
+            const fromUrl = urlParams.get('spaceId')
+            if (fromUrl && /^0x[a-fA-F0-9]{40}$/.test(fromUrl)) return fromUrl
+
+            // 2. From context.towns.spaceId
+            const raw = context?.towns?.spaceId || ''
+            if (!raw) return ''
+            // Already a valid address
+            if (/^0x[a-fA-F0-9]{40}$/.test(raw)) return raw
+            // Encoded stream ID: strip 0x, skip 2-char type prefix, take 40-char address
+            const hex = raw.startsWith('0x') ? raw.slice(2) : raw
+            if (hex.length >= 42) {
+                const candidate = '0x' + hex.slice(2, 42)
+                if (/^0x[a-fA-F0-9]{40}$/.test(candidate)) return candidate
+            }
+            return raw // return raw as fallback
+        }
+
         function tokensToWei(tokens) {
             const s = tokens.trim()
             if (!s || isNaN(Number(s))) return null
@@ -802,23 +828,28 @@
                 taxPercent = data.taxPercent ?? 2
                 taxEnabled = data.taxEnabled ?? false
                 botTreasuryAddress = data.botAddress || botTreasuryAddress
+                if (data.taxHolderCount > 0) {
+                    taxHolderCount = data.taxHolderCount
+                    document.getElementById('taxMemberCount').textContent = taxHolderCount
+                }
             } catch { /* use defaults */ }
         }
 
         async function apiFetchHolders() {
-            const spaceId = context?.towns?.spaceId || ''
-            const url = spaceId ? `/api/holders?spaceId=${encodeURIComponent(spaceId)}` : '/api/holders'
+            const spaceAddr = getSpaceAddress()
+            const url = spaceAddr ? `/api/holders?spaceId=${encodeURIComponent(spaceAddr)}` : '/api/holders'
+            console.log('[Holders] Fetching with spaceAddress:', spaceAddr)
             const res = await fetch(url)
             if (!res.ok) throw new Error('Failed to fetch holders')
             return await res.json()
         }
 
         async function apiCreateAirdrop(airdropType, totalAmountWei, creatorAddress, currency) {
-            const spaceId = context?.towns?.spaceId || ''
+            const spaceAddr = getSpaceAddress()
             const res = await fetch('/api/airdrop', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ airdropType, totalAmount: totalAmountWei, creatorAddress, currency, spaceId })
+                body: JSON.stringify({ airdropType, totalAmount: totalAmountWei, creatorAddress, currency, spaceId: spaceAddr })
             })
             if (!res.ok) {
                 const err = await res.json().catch(() => ({}))
@@ -1313,7 +1344,7 @@
         // Global handlers for inline onclick
         window.joinPublicDrop = async function(id) {
             try {
-                const updated = await apiJoinAirdrop(id, context.towns.user.userId)
+                const updated = await apiJoinAirdrop(id, context.towns.user.address || context.towns.user.userId)
                 currentAirdrop = updated
                 openStatusScreen(updated)
             } catch (err) {
@@ -1434,7 +1465,7 @@
             btn.disabled = true
             btn.textContent = 'Joining...'
             try {
-                const updated = await apiJoinAirdrop(currentAirdrop.id, context.towns.user.userId)
+                const updated = await apiJoinAirdrop(currentAirdrop.id, context.towns.user.address || context.towns.user.userId)
                 currentAirdrop = updated
                 updateStatusUI(updated)
             } catch (err) {
