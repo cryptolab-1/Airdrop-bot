@@ -465,7 +465,7 @@
                     </div>
                 </div>
                 <div id="taxNote" class="hidden" style="margin-top:4px;">
-                    <div class="hint" style="margin:0; text-align:center; font-style:italic;">Tax is distributed to town members</div>
+                    <div class="hint" style="margin:0; text-align:center; font-style:italic;">Tax is distributed to Crypto Lab's town members</div>
                 </div>
 
                 <div style="margin-top:16px;">
@@ -1027,18 +1027,57 @@
             }
         }
 
+        // Resolve an EIP-1193 provider from the Towns / Farcaster SDK
+        // Towns docs: https://docs.towns.com/build/miniapps/sdk#wallet-actions
+        async function getWalletProvider() {
+            // 1. Towns: sdk.wallet.getEthereumProvider() (async, returns provider)
+            if (typeof sdk.wallet?.getEthereumProvider === 'function') {
+                console.log('[Wallet] Using sdk.wallet.getEthereumProvider()')
+                return await sdk.wallet.getEthereumProvider()
+            }
+            // 2. Farcaster: sdk.wallet.ethProvider (sync property)
+            if (sdk.wallet?.ethProvider) {
+                console.log('[Wallet] Using sdk.wallet.ethProvider')
+                return sdk.wallet.ethProvider
+            }
+            return null
+        }
+
+        // Send an EIP-1193 request, trying Towns ethProviderRequest first
+        async function walletRequest(method, params) {
+            // 1. Towns direct: sdk.wallet.ethProviderRequest
+            if (typeof sdk.wallet?.ethProviderRequest === 'function') {
+                console.log(`[Wallet] ethProviderRequest(${method})`)
+                return await sdk.wallet.ethProviderRequest({ method, params })
+            }
+            // 2. Provider-based
+            const provider = await getWalletProvider()
+            if (provider && typeof provider.request === 'function') {
+                console.log(`[Wallet] provider.request(${method})`)
+                return await provider.request({ method, params })
+            }
+            throw new Error('no-wallet')
+        }
+
         document.getElementById('sendDepositBtn').addEventListener('click', async () => {
             hideError('depositError')
             const btn = document.getElementById('sendDepositBtn')
             btn.disabled = true
 
             try {
-                // Use Towns Smart Wallet via sdk.wallet.ethProviderRequest
-                // See: https://docs.towns.com/build/miniapps/sdk#wallet-actions
-                if (!sdk.wallet?.ethProviderRequest) throw new Error('no-wallet')
+                // Debug: log what wallet methods are available
+                console.log('[Wallet] sdk.wallet keys:', sdk.wallet ? Object.keys(sdk.wallet) : 'null')
+                console.log('[Wallet] context.towns.user:', JSON.stringify(context.towns?.user))
 
                 // Get user's Smart Wallet address from Towns context
-                const userAddress = context.towns?.user?.address
+                let userAddress = context.towns?.user?.address
+                if (!userAddress) {
+                    // Fallback: try requesting accounts
+                    try {
+                        const accounts = await walletRequest('eth_requestAccounts', [])
+                        userAddress = accounts?.[0]
+                    } catch { /* ignore */ }
+                }
                 if (!userAddress) throw new Error('no-wallet')
 
                 const tokenAddr = currentAirdrop.currency || TOWNS_ADDRESS
@@ -1047,16 +1086,15 @@
                 document.getElementById('depositProcessing').classList.remove('hidden')
                 document.getElementById('depositWalletSection').classList.add('hidden')
 
-                // Send ERC20 transfer via Towns Smart Wallet
-                const txHash = await sdk.wallet.ethProviderRequest({
-                    method: 'eth_sendTransaction',
-                    params: [{
-                        from: userAddress,
-                        to: tokenAddr,
-                        data: data,
-                        value: '0x0',
-                    }]
-                })
+                // Send ERC20 transfer via wallet
+                const txHash = await walletRequest('eth_sendTransaction', [{
+                    from: userAddress,
+                    to: tokenAddr,
+                    data: data,
+                    value: '0x0',
+                }])
+
+                console.log('[Wallet] tx hash:', txHash)
 
                 // Confirm deposit with backend
                 const updated = await apiConfirmDeposit(currentAirdrop.id, txHash)
@@ -1076,12 +1114,14 @@
                 }
 
             } catch (err) {
+                console.error('[Wallet] Error:', err)
                 document.getElementById('depositProcessing').classList.add('hidden')
-                if (err.message === 'no-wallet' || err.message?.includes('not a function') || err.message?.includes('undefined')) {
-                    // Fallback to manual deposit
+                if (err.message === 'no-wallet') {
+                    // No wallet available at all — show manual fallback
                     document.getElementById('depositWalletSection').classList.add('hidden')
                     document.getElementById('depositManualSection').classList.remove('hidden')
                 } else {
+                    // Wallet exists but tx failed — show error and let user retry
                     showError('depositError', err.message || 'Transaction failed')
                     document.getElementById('depositWalletSection').classList.remove('hidden')
                 }
