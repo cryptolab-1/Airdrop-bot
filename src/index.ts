@@ -269,6 +269,35 @@ honoApp.get('/embed-meta', (c) => {
     return c.json(generateEmbedMeta())
 })
 
+// OG image (3:2 ratio = 1200x800)
+honoApp.get('/og-image.png', (c) => {
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="800">
+        <rect width="1200" height="800" fill="#7C3AED"/>
+        <text x="600" y="340" text-anchor="middle" font-family="Arial,sans-serif" font-size="80" font-weight="bold" fill="white">💸 $TOWNS</text>
+        <text x="600" y="440" text-anchor="middle" font-family="Arial,sans-serif" font-size="50" fill="rgba(255,255,255,0.9)">Airdrop</text>
+        <text x="600" y="520" text-anchor="middle" font-family="Arial,sans-serif" font-size="28" fill="rgba(255,255,255,0.7)">Distribute tokens to NFT holders</text>
+    </svg>`
+    return new Response(svg, { headers: { 'Content-Type': 'image/svg+xml', 'Cache-Control': 'public, max-age=86400' } })
+})
+
+// Splash image (200x200)
+honoApp.get('/splash.png', (c) => {
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="200" height="200">
+        <rect width="200" height="200" fill="#7C3AED"/>
+        <text x="100" y="115" text-anchor="middle" font-family="Arial,sans-serif" font-size="64">💸</text>
+    </svg>`
+    return new Response(svg, { headers: { 'Content-Type': 'image/svg+xml', 'Cache-Control': 'public, max-age=86400' } })
+})
+
+// Icon (1024x1024)
+honoApp.get('/icon.png', (c) => {
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024">
+        <rect width="1024" height="1024" rx="200" fill="#7C3AED"/>
+        <text x="512" y="580" text-anchor="middle" font-family="Arial,sans-serif" font-size="400">💸</text>
+    </svg>`
+    return new Response(svg, { headers: { 'Content-Type': 'image/svg+xml', 'Cache-Control': 'public, max-age=86400' } })
+})
+
 // ============================================================================
 // API Routes
 // ============================================================================
