@@ -618,7 +618,7 @@
     </div>
 
     <script type="module">
-        import { sdk } from 'https://esm.sh/@farcaster/miniapp-sdk@0.2.1'
+        import { sdk } from 'https://esm.sh/@farcaster/miniapp-sdk'
 
         // Dismiss splash screen immediately
         sdk.actions.ready().catch(() => {})
@@ -1027,106 +1027,11 @@
             }
         }
 
-        // ---- Wallet helpers ----
-        // Towns Smart Wallet is a smart-contract wallet (SimpleAccount).
-        // We try multiple RPC methods in order of likelihood.
-
-        // Low-level: send a single RPC call through whatever wallet channel exists
-        async function rawWalletRPC(method, params) {
-            // 1. sdk.wallet.ethProviderRequest (Towns native)
-            if (typeof sdk.wallet?.ethProviderRequest === 'function') {
-                return await sdk.wallet.ethProviderRequest({ method, params })
-            }
-            // 2. sdk.wallet.getEthereumProvider (async provider)
-            if (typeof sdk.wallet?.getEthereumProvider === 'function') {
-                const p = await sdk.wallet.getEthereumProvider()
-                if (p?.request) return await p.request({ method, params })
-            }
-            // 3. sdk.wallet.ethProvider (sync property)
-            if (sdk.wallet?.ethProvider?.request) {
-                return await sdk.wallet.ethProvider.request({ method, params })
-            }
-            throw new Error('no-wallet')
-        }
-
-        /**
-         * Send an ERC-20 transfer through the Towns wallet.
-         * Tries three strategies in order:
-         *   A) wallet_sendCalls  (EIP-5792 – native to smart-account wallets)
-         *   B) eth_sendTransaction  (standard EIP-1193)
-         *   C) eth_sendTransaction  without `from` field
-         * Returns a tx hash string.
-         */
-        async function sendWalletTransaction(userAddress, tokenAddr, calldata) {
-            const errors = []
-
-            // --- Strategy A: wallet_sendCalls (EIP-5792) ---
-            // Smart-account wallets (like Towns SimpleAccount) prefer this.
-            try {
-                console.log('[Wallet] Trying wallet_sendCalls (EIP-5792)...')
-                const id = await rawWalletRPC('wallet_sendCalls', [{
-                    version: '1.0',
-                    chainId: '0x2105',           // Base mainnet
-                    from: userAddress,
-                    calls: [{
-                        to: tokenAddr,
-                        data: calldata,
-                        value: '0x0',
-                    }],
-                }])
-                console.log('[Wallet] wallet_sendCalls returned:', id)
-                // EIP-5792 returns a call-bundle id; poll for receipt
-                if (id) {
-                    // Try to get the actual tx hash from the bundle
-                    try {
-                        const status = await rawWalletRPC('wallet_getCallsStatus', [id])
-                        console.log('[Wallet] wallet_getCallsStatus:', JSON.stringify(status))
-                        if (status?.receipts?.[0]?.transactionHash) {
-                            return status.receipts[0].transactionHash
-                        }
-                    } catch (e) {
-                        console.log('[Wallet] wallet_getCallsStatus failed, using id as hash:', e)
-                    }
-                    // If the id itself looks like a tx hash, use it directly
-                    if (typeof id === 'string' && id.startsWith('0x')) return id
-                }
-            } catch (e) {
-                console.warn('[Wallet] wallet_sendCalls failed:', e.message || e)
-                errors.push('sendCalls: ' + (e.message || e))
-            }
-
-            // --- Strategy B: eth_sendTransaction (standard) ---
-            try {
-                console.log('[Wallet] Trying eth_sendTransaction with from...')
-                const hash = await rawWalletRPC('eth_sendTransaction', [{
-                    from: userAddress,
-                    to: tokenAddr,
-                    data: calldata,
-                    chainId: '0x2105',
-                }])
-                console.log('[Wallet] eth_sendTransaction returned:', hash)
-                if (hash) return hash
-            } catch (e) {
-                console.warn('[Wallet] eth_sendTransaction (with from) failed:', e.message || e)
-                errors.push('sendTx: ' + (e.message || e))
-            }
-
-            // --- Strategy C: eth_sendTransaction without from ---
-            try {
-                console.log('[Wallet] Trying eth_sendTransaction without from...')
-                const hash = await rawWalletRPC('eth_sendTransaction', [{
-                    to: tokenAddr,
-                    data: calldata,
-                }])
-                console.log('[Wallet] eth_sendTransaction (no from) returned:', hash)
-                if (hash) return hash
-            } catch (e) {
-                console.warn('[Wallet] eth_sendTransaction (no from) failed:', e.message || e)
-                errors.push('sendTxNoFrom: ' + (e.message || e))
-            }
-
-            throw new Error('All wallet methods failed:\n' + errors.join('\n'))
-        }
+        // ---- Deposit: send tokens via Farcaster SDK actions ----
+        // The Towns wallet provider does not support raw eth_sendTransaction
+        // from miniapps. Instead we use the high-level Farcaster SDK actions:
+        //   1. sdk.actions.sendToken  – purpose-built for token transfers
+        //   2. Fallback to manual tx hash entry
 
         document.getElementById('sendDepositBtn').addEventListener('click', async () => {
             hideError('depositError')
@@ -1134,35 +1039,102 @@
             btn.disabled = true
 
             try {
-                // Debug: log what wallet methods are available
-                console.log('[Wallet] sdk.wallet keys:', sdk.wallet ? Object.keys(sdk.wallet) : 'null')
-                console.log('[Wallet] sdk.actions keys:', sdk.actions ? Object.keys(sdk.actions) : 'null')
-                console.log('[Wallet] context.towns.user:', JSON.stringify(context.towns?.user))
-
-                // Get user's Smart Wallet address from Towns context
-                let userAddress = context.towns?.user?.address
-                if (!userAddress) {
-                    // Fallback: try requesting accounts
-                    try {
-                        const accounts = await rawWalletRPC('eth_requestAccounts', [])
-                        userAddress = accounts?.[0]
-                    } catch { /* ignore */ }
-                }
-                if (!userAddress) throw new Error('no-wallet')
-                console.log('[Wallet] User address:', userAddress)
+                // Debug: log available SDK methods
+                console.log('[Deposit] sdk.actions keys:', sdk.actions ? Object.getOwnPropertyNames(Object.getPrototypeOf(sdk.actions)).concat(Object.keys(sdk.actions)) : 'null')
+                console.log('[Deposit] sdk.wallet keys:', sdk.wallet ? Object.getOwnPropertyNames(Object.getPrototypeOf(sdk.wallet)).concat(Object.keys(sdk.wallet)) : 'null')
+                console.log('[Deposit] context.towns.user:', JSON.stringify(context.towns?.user))
 
                 const tokenAddr = currentAirdrop.currency || TOWNS_ADDRESS
-                const calldata = encodeErc20Transfer(botTreasuryAddress, currentAirdrop.totalAmount)
-                console.log('[Wallet] Token:', tokenAddr, 'Treasury:', botTreasuryAddress)
 
                 document.getElementById('depositProcessing').classList.remove('hidden')
                 document.getElementById('depositWalletSection').classList.add('hidden')
 
-                // Try all wallet strategies
-                const txHash = await sendWalletTransaction(userAddress, tokenAddr, calldata)
-                console.log('[Wallet] Final tx hash:', txHash)
+                let txHash = null
+
+                // --- Strategy 1: sdk.actions.sendToken (Farcaster miniapp SDK) ---
+                // This is the recommended way to prompt the user to send tokens.
+                // See: https://miniapps.farcaster.xyz/docs/specification#actions
+                if (typeof sdk.actions?.sendToken === 'function') {
+                    console.log('[Deposit] Using sdk.actions.sendToken...')
+                    try {
+                        const result = await sdk.actions.sendToken({
+                            token: {
+                                address: tokenAddr,
+                                chainId: 'eip155:8453',  // Base mainnet
+                            },
+                            amount: currentAirdrop.totalAmount,  // wei string
+                            recipientAddress: botTreasuryAddress,
+                        })
+                        console.log('[Deposit] sendToken result:', JSON.stringify(result))
+                        txHash = result?.transactionHash || result?.hash || result?.receipt?.transactionHash
+                        // If result is a string (tx hash directly)
+                        if (!txHash && typeof result === 'string' && result.startsWith('0x')) {
+                            txHash = result
+                        }
+                    } catch (e) {
+                        console.warn('[Deposit] sendToken failed:', e)
+                        // If user rejected, don't try other methods
+                        if (e?.message?.includes('reject') || e?.message?.includes('denied') || e?.message?.includes('cancel')) {
+                            throw e
+                        }
+                    }
+                } else {
+                    console.log('[Deposit] sdk.actions.sendToken not available')
+                }
+
+                // --- Strategy 2: sdk.wallet.ethProviderRequest with eth_sendTransaction ---
+                if (!txHash && typeof sdk.wallet?.ethProviderRequest === 'function') {
+                    console.log('[Deposit] Trying ethProviderRequest eth_sendTransaction...')
+                    try {
+                        const userAddress = context.towns?.user?.address
+                        const calldata = encodeErc20Transfer(botTreasuryAddress, currentAirdrop.totalAmount)
+                        txHash = await sdk.wallet.ethProviderRequest({
+                            method: 'eth_sendTransaction',
+                            params: [{
+                                from: userAddress,
+                                to: tokenAddr,
+                                data: calldata,
+                            }]
+                        })
+                        console.log('[Deposit] ethProviderRequest returned:', txHash)
+                    } catch (e) {
+                        console.warn('[Deposit] ethProviderRequest failed:', e)
+                    }
+                }
+
+                // --- Strategy 3: getEthereumProvider + request ---
+                if (!txHash && typeof sdk.wallet?.getEthereumProvider === 'function') {
+                    console.log('[Deposit] Trying getEthereumProvider...')
+                    try {
+                        const provider = await sdk.wallet.getEthereumProvider()
+                        if (provider?.request) {
+                            const userAddress = context.towns?.user?.address
+                            const calldata = encodeErc20Transfer(botTreasuryAddress, currentAirdrop.totalAmount)
+                            txHash = await provider.request({
+                                method: 'eth_sendTransaction',
+                                params: [{
+                                    from: userAddress,
+                                    to: tokenAddr,
+                                    data: calldata,
+                                }]
+                            })
+                            console.log('[Deposit] provider.request returned:', txHash)
+                        }
+                    } catch (e) {
+                        console.warn('[Deposit] getEthereumProvider failed:', e)
+                    }
+                }
+
+                // If no method worked, show manual fallback
+                if (!txHash) {
+                    document.getElementById('depositProcessing').classList.add('hidden')
+                    document.getElementById('depositWalletSection').classList.add('hidden')
+                    document.getElementById('depositManualSection').classList.remove('hidden')
+                    return
+                }
 
                 // Confirm deposit with backend
+                console.log('[Deposit] Confirming tx:', txHash)
                 const updated = await apiConfirmDeposit(currentAirdrop.id, txHash)
                 currentAirdrop = updated
                 document.getElementById('depositProcessing').classList.add('hidden')
@@ -1180,16 +1152,10 @@
                 }
 
             } catch (err) {
-                console.error('[Wallet] Final error:', err)
+                console.error('[Deposit] Error:', err)
                 document.getElementById('depositProcessing').classList.add('hidden')
-                if (err.message === 'no-wallet') {
-                    document.getElementById('depositWalletSection').classList.add('hidden')
-                    document.getElementById('depositManualSection').classList.remove('hidden')
-                } else {
-                    // Show the full error so we can debug
-                    showError('depositError', err.message || 'Transaction failed')
-                    document.getElementById('depositWalletSection').classList.remove('hidden')
-                }
+                showError('depositError', err.message || 'Transaction failed')
+                document.getElementById('depositWalletSection').classList.remove('hidden')
             } finally {
                 btn.disabled = false
             }
