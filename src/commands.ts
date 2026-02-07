@@ -9,7 +9,7 @@ const commands = [
     {
         name: 'drop',
         description:
-            'Create airdrop: /drop <amount> or /drop react <amount>. TOWNS only.',
+            'Launch Airdrop App',
     },
 ] as const satisfies BotCommand[]
 
