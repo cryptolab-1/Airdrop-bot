@@ -20,6 +20,7 @@ import { supportsExecutionMode } from 'viem/experimental/erc7821'
 import { parseEther, formatEther, parseAbi, parseAbiItem } from 'viem'
 import { getLogs, getBlockNumber } from 'viem/actions'
 import { readFileSync } from 'node:fs'
+import { deflateSync } from 'node:zlib'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 import commands from './commands'
@@ -439,12 +440,12 @@ interface ManifestData {
 
 // Defaults used until manifest is fetched
 let manifestData: ManifestData = {
-    name: '$TOWNS Airdrop',
+    name: '',
     homeUrl: MINIAPP_URL,
-    iconUrl: '',
-    imageUrl: '',
-    buttonTitle: 'Launch Airdrop',
-    splashImageUrl: '',
+    iconUrl: 'https://airdrop-bot-tvql.onrender.com/icon.png',
+    imageUrl: 'https://airdrop-bot-tvql.onrender.com/image.png',
+    buttonTitle: 'Launch Airdrop App',
+    splashImageUrl: 'https://airdrop-bot-tvql.onrender.com/splash.png',
     splashBackgroundColor: '#7C3AED',
 }
 
@@ -517,17 +518,95 @@ const app = bot.start()
 app.get('/', (c) => c.html(buildMiniappHtml()))
 app.get('/miniapp.html', (c) => c.html(buildMiniappHtml()))
 
-// Serve image
-app.get('/image.png', (c) => {
-    try {
-        const imagePath = join(__dirname, '..', 'public', 'image.png')
-        const image = readFileSync(imagePath)
-        c.header('Content-Type', 'image/png')
-        return c.body(image)
-    } catch {
-        return c.text('Image not found', 404)
+// ---- PNG image generation (solid color, no external files needed) ----
+
+function createPng(width: number, height: number, r: number, g: number, b: number): Uint8Array {
+    // Build raw RGBA scanlines: filter byte (0) + RGBA per pixel
+    const rowBytes = 1 + width * 4
+    const raw = new Uint8Array(rowBytes * height)
+    for (let y = 0; y < height; y++) {
+        const offset = y * rowBytes
+        raw[offset] = 0 // filter: None
+        for (let x = 0; x < width; x++) {
+            const px = offset + 1 + x * 4
+            raw[px] = r
+            raw[px + 1] = g
+            raw[px + 2] = b
+            raw[px + 3] = 255 // alpha
+        }
     }
-})
+
+    const compressed = deflateSync(raw)
+
+    // CRC-32 table
+    const crcTable: number[] = []
+    for (let n = 0; n < 256; n++) {
+        let c = n
+        for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1
+        crcTable[n] = c
+    }
+    function crc32(buf: Uint8Array): number {
+        let c = 0xffffffff
+        for (let i = 0; i < buf.length; i++) c = crcTable[(c ^ buf[i]) & 0xff] ^ (c >>> 8)
+        return (c ^ 0xffffffff) >>> 0
+    }
+
+    function chunk(type: string, data: Uint8Array): Uint8Array {
+        const len = data.length
+        const buf = new Uint8Array(12 + len)
+        const view = new DataView(buf.buffer)
+        view.setUint32(0, len)
+        buf[4] = type.charCodeAt(0)
+        buf[5] = type.charCodeAt(1)
+        buf[6] = type.charCodeAt(2)
+        buf[7] = type.charCodeAt(3)
+        buf.set(data, 8)
+        const crcData = new Uint8Array(4 + len)
+        crcData.set(buf.subarray(4, 8 + len))
+        view.setUint32(8 + len, crc32(crcData))
+        return buf
+    }
+
+    // IHDR
+    const ihdr = new Uint8Array(13)
+    const ihdrView = new DataView(ihdr.buffer)
+    ihdrView.setUint32(0, width)
+    ihdrView.setUint32(4, height)
+    ihdr[8] = 8  // bit depth
+    ihdr[9] = 6  // RGBA
+    ihdr[10] = 0 // compression
+    ihdr[11] = 0 // filter
+    ihdr[12] = 0 // interlace
+
+    const signature = new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10])
+    const ihdrChunk = chunk('IHDR', ihdr)
+    const idatChunk = chunk('IDAT', compressed)
+    const iendChunk = chunk('IEND', new Uint8Array(0))
+
+    const png = new Uint8Array(signature.length + ihdrChunk.length + idatChunk.length + iendChunk.length)
+    png.set(signature, 0)
+    png.set(ihdrChunk, signature.length)
+    png.set(idatChunk, signature.length + ihdrChunk.length)
+    png.set(iendChunk, signature.length + ihdrChunk.length + idatChunk.length)
+    return png
+}
+
+// Pre-generate images at startup (purple #7C3AED = rgb(124, 58, 237))
+const ICON_PNG = createPng(512, 512, 124, 58, 237)
+const IMAGE_PNG = createPng(1200, 630, 124, 58, 237)
+const SPLASH_PNG = createPng(200, 200, 124, 58, 237)
+
+// Serve images
+function servePng(c: any, png: Uint8Array) {
+    c.header('Content-Type', 'image/png')
+    c.header('Content-Length', png.length.toString())
+    c.header('Cache-Control', 'public, max-age=86400')
+    return c.body(png)
+}
+
+app.get('/icon.png', (c) => servePng(c, ICON_PNG))
+app.get('/image.png', (c) => servePng(c, IMAGE_PNG))
+app.get('/splash.png', (c) => servePng(c, SPLASH_PNG))
 
 // Agent metadata
 app.get('/.well-known/agent-metadata.json', async (c) => {
