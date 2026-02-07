@@ -16,6 +16,7 @@
   },
   "dependencies": {
     "@connectrpc/connect-node": "^2.1.0",
+    "@noble/hashes": "^2.0.1",
     "@towns-protocol/bot": "^1.0.3",
     "@towns-protocol/proto": "^1.0.3",
     "@towns-protocol/web3": "^1.0.3",
