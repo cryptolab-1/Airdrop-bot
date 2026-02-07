@@ -420,26 +420,102 @@ bot.onSlashCommand('drop', async (handler, event) => {
 })
 
 // ============================================================================
+// Farcaster manifest cache (fetched once at startup, refreshed periodically)
+// ============================================================================
+
+const MANIFEST_URL =
+    'https://api.farcaster.xyz/miniapps/hosted-manifest/019c356b-6909-fbcf-3306-154b6483a2e4'
+const MANIFEST_REFRESH_MS = 5 * 60 * 1000 // Refresh every 5 minutes
+
+interface ManifestData {
+    name: string
+    homeUrl: string
+    iconUrl: string
+    imageUrl: string
+    buttonTitle: string
+    splashImageUrl: string
+    splashBackgroundColor: string
+}
+
+// Defaults used until manifest is fetched
+let manifestData: ManifestData = {
+    name: '$TOWNS Airdrop',
+    homeUrl: MINIAPP_URL,
+    iconUrl: '',
+    imageUrl: '',
+    buttonTitle: 'Launch Airdrop',
+    splashImageUrl: '',
+    splashBackgroundColor: '#7C3AED',
+}
+
+async function fetchManifest() {
+    try {
+        const res = await fetch(MANIFEST_URL)
+        if (!res.ok) {
+            console.warn(`[Manifest] Failed to fetch (${res.status}), using cached values`)
+            return
+        }
+        const json = await res.json() as any
+        const m = json?.miniapp
+        if (m) {
+            manifestData = {
+                name: m.name || manifestData.name,
+                homeUrl: m.homeUrl || manifestData.homeUrl,
+                iconUrl: m.iconUrl || manifestData.iconUrl,
+                imageUrl: m.imageUrl || manifestData.imageUrl,
+                buttonTitle: m.buttonTitle || manifestData.buttonTitle,
+                splashImageUrl: m.splashImageUrl || manifestData.splashImageUrl,
+                splashBackgroundColor: m.splashBackgroundColor || manifestData.splashBackgroundColor,
+            }
+            console.log('[Manifest] Loaded from Farcaster:', manifestData.name)
+        }
+    } catch (err) {
+        console.warn('[Manifest] Fetch error, using cached values:', err)
+    }
+}
+
+// Fetch immediately, then refresh periodically
+await fetchManifest()
+setInterval(fetchManifest, MANIFEST_REFRESH_MS)
+
+// Build dynamic HTML by injecting manifest values into the template
+function buildMiniappHtml(): string {
+    const htmlPath = join(__dirname, '..', 'public', 'miniapp.html')
+    const template = readFileSync(htmlPath, 'utf-8')
+
+    const m = manifestData
+    const embedJson = JSON.stringify({
+        version: '1',
+        imageUrl: m.imageUrl,
+        button: {
+            title: m.buttonTitle,
+            action: {
+                type: 'launch_miniapp',
+                name: m.name,
+                url: m.homeUrl,
+                splashImageUrl: m.splashImageUrl,
+                splashBackgroundColor: m.splashBackgroundColor,
+            },
+        },
+    })
+
+    // Replace placeholder meta tags with live manifest values
+    return template
+        .replace('{{FC_MINIAPP_JSON}}', embedJson.replace(/'/g, '&#39;'))
+        .replace('{{OG_TITLE}}', m.name)
+        .replace('{{OG_IMAGE}}', m.imageUrl || m.iconUrl)
+        .replace('{{PAGE_TITLE}}', m.name)
+}
+
+// ============================================================================
 // Start Hono app and add custom routes
 // ============================================================================
 
 const app = bot.start()
 
 // Serve miniapp HTML at both / and /miniapp.html
-// Farcaster embed preview fetches meta tags from homeUrl (typically the root)
-function serveMiniapp(c: any) {
-    try {
-        const htmlPath = join(__dirname, '..', 'public', 'miniapp.html')
-        const html = readFileSync(htmlPath, 'utf-8')
-        return c.html(html)
-    } catch (error) {
-        console.error('Failed to serve miniapp:', error)
-        return c.text('Miniapp not found', 404)
-    }
-}
-
-app.get('/', (c) => serveMiniapp(c))
-app.get('/miniapp.html', (c) => serveMiniapp(c))
+app.get('/', (c) => c.html(buildMiniappHtml()))
+app.get('/miniapp.html', (c) => c.html(buildMiniappHtml()))
 
 // Serve image
 app.get('/image.png', (c) => {
@@ -458,12 +534,9 @@ app.get('/.well-known/agent-metadata.json', async (c) => {
     return c.json(await bot.getIdentityMetadata())
 })
 
-// Farcaster manifest redirect (same pattern as Farcaster dashboard instructs)
+// Farcaster manifest redirect
 app.get('/.well-known/farcaster.json', (c) => {
-    return c.redirect(
-        'https://api.farcaster.xyz/miniapps/hosted-manifest/019c356b-6909-fbcf-3306-154b6483a2e4',
-        307,
-    )
+    return c.redirect(MANIFEST_URL, 307)
 })
 
 // ============================================================================
