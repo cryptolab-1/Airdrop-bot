@@ -519,10 +519,11 @@ const app = bot.start()
 // Mount Hono routes onto the bot's app
 app.route('/', honoApp)
 
-// Export Bun server configuration
-// hostname 0.0.0.0 is required for cloud deployments (Render, etc.)
-export default {
-    port: parseInt(process.env.PORT ?? '3000', 10),
+// Start server explicitly for cloud deployments (Render, etc.)
+const port = parseInt(process.env.PORT ?? '3000', 10)
+Bun.serve({
+    port,
     hostname: '0.0.0.0',
     fetch: app.fetch,
-}
+})
+console.log(`Server started on 0.0.0.0:${port}`)
