@@ -49,64 +49,21 @@ bot.onSlashCommand('help', async (handler, { channelId }) => {
 })
 
 bot.onSlashCommand('drop', async (handler, event) => {
-    const { channelId, userId, args, spaceId, isDm } = event
+    const { channelId, isDm } = event
     
     if (isDm) {
         await handler.sendMessage(channelId, 'Use `/drop` in a space channel.')
         return
     }
 
-    // If no arguments, open the mini app
-    if (args.length === 0) {
-        await handler.sendMessage(
-            channelId,
-            MINIAPP_URL,
-            {
-                attachments: [
-                    {
-                        type: 'miniapp',
-                        url: MINIAPP_URL,
-                    },
-                ],
-            },
-        )
-        return
-    }
-
-    // Quick drop with amount specified
-    const first = args[0]?.toLowerCase()
-    const isReact = first === 'react'
-    const amountStr = isReact ? args[1] : args[0]
-    
-    if (!amountStr) {
-        await handler.sendMessage(
-            channelId,
-            'Usage:\n• `/drop` - Open mini app\n• `/drop <amount>` - Quick fixed drop\n• `/drop react <amount>` - React-to-join drop',
-        )
-        return
-    }
-
-    let amount: number
-    try {
-        amount = parseFloat(amountStr)
-        if (!Number.isFinite(amount) || amount <= 0) throw new Error('invalid')
-    } catch {
-        await handler.sendMessage(channelId, 'Provide a valid positive amount (e.g. `10` or `1.5`).')
-        return
-    }
-
-    // For quick drops, open mini app with pre-filled amount
-    const mode = isReact ? 'react' : 'fixed'
-    const appUrl = `${MINIAPP_URL}?amount=${amount}&mode=${mode}`
-    
     await handler.sendMessage(
         channelId,
-        appUrl,
+        'Join Airdrop App',
         {
             attachments: [
                 {
                     type: 'miniapp',
-                    url: appUrl,
+                    url: MINIAPP_URL,
                 },
             ],
         },
