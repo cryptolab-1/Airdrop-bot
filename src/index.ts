@@ -58,6 +58,13 @@ const DISTRIBUTION_RETRY_DELAY_MS = Math.max(
     parseInt(process.env.AIRDROP_DISTRIBUTION_RETRY_DELAY_MS ?? '2000', 10) || 2000,
 )
 
+// Tax system: a percentage of each airdrop is distributed to town members
+const AIRDROP_TAX_PERCENT = Math.max(
+    0,
+    Math.min(100, parseFloat(process.env.AIRDROP_TAX_PERCENT ?? '2')),
+)
+const AIRDROP_TAX_NFT_ADDRESS = (process.env.AIRDROP_TAX_NFT_ADDRESS ?? '').trim()
+
 // ============================================================================
 // Bot initialization
 // ============================================================================
@@ -85,14 +92,19 @@ type AirdropStatus = 'pending' | 'funded' | 'distributing' | 'completed' | 'canc
 interface Airdrop {
     id: string
     creatorAddress: string
-    mode: 'fixed' | 'react'
-    totalAmount: string
+    airdropType: 'space' | 'public'
+    currency: string // ERC20 token contract address
+    totalAmount: string // gross amount deposited
+    taxPercent: number // e.g. 2 means 2%
+    taxAmount: string // wei taken as tax
+    netAmount: string // totalAmount - taxAmount (distributed to recipients)
     amountPerRecipient: string
     recipientCount: number
     status: AirdropStatus
     participants: string[]
     depositTxHash?: string
     distributionTxHash?: string
+    taxDistributionTxHash?: string
     createdAt: number
     updatedAt: number
 }
@@ -123,16 +135,31 @@ function generateId(): string {
     return `airdrop_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`
 }
 
+/** Calculate tax and net amounts from a gross total. */
+function computeTax(totalWei: bigint): { taxAmount: bigint; netAmount: bigint } {
+    // Use basis points (2% = 200 bps) for precision
+    const bps = BigInt(Math.round(AIRDROP_TAX_PERCENT * 100))
+    const taxAmount = (totalWei * bps) / 10000n
+    const netAmount = totalWei - taxAmount
+    return { taxAmount, netAmount }
+}
+
 function airdropToResponse(a: Airdrop) {
     return {
         id: a.id,
         creatorAddress: a.creatorAddress,
+        airdropType: a.airdropType,
+        currency: a.currency,
         totalAmount: a.totalAmount,
+        taxPercent: a.taxPercent,
+        taxAmount: a.taxAmount,
+        netAmount: a.netAmount,
         amountPerRecipient: a.amountPerRecipient,
         recipientCount: a.recipientCount,
         status: a.status,
         participants: a.participants,
         txHash: a.distributionTxHash || a.depositTxHash,
+        mode: a.airdropType === 'space' ? 'fixed' : 'react', // backward compat
     }
 }
 
@@ -323,6 +350,7 @@ async function runBotDistribution(
     amountPer: bigint,
     _totalRaw: bigint,
     fromAddress: Address,
+    tokenAddress: Address = TOWNS_ADDRESS as Address,
 ): Promise<{ ok: boolean; txHash?: string; error?: string }> {
     const treasury = bot.appAddress as Address | undefined
     const account = (bot.viem as any).account
@@ -347,7 +375,7 @@ async function runBotDistribution(
                     address: treasury,
                     account: account as any,
                     calls: batch.map((to) => ({
-                        to: TOWNS_ADDRESS as Address,
+                        to: tokenAddress,
                         abi: erc20Abi,
                         functionName: 'transfer',
                         args: [to, amountPer],
@@ -372,19 +400,77 @@ async function runBotDistribution(
 async function runDistribution(airdrop: Airdrop) {
     const botAddress = bot.appAddress as Address
     const amountPer = BigInt(airdrop.amountPerRecipient)
-    const totalRaw = BigInt(airdrop.totalAmount)
+    const netRaw = BigInt(airdrop.netAmount)
     const recipients = airdrop.participants.map((a) => a as Address)
+    const tokenAddress = (airdrop.currency || TOWNS_ADDRESS) as Address
 
-    const result = await runBotDistribution(recipients, amountPer, totalRaw, botAddress)
+    // 1. Distribute net amount to airdrop recipients
+    const result = await runBotDistribution(recipients, amountPer, netRaw, botAddress, tokenAddress)
 
-    if (result.ok) {
-        airdrop.status = 'completed'
-        airdrop.distributionTxHash = result.txHash
-    } else {
+    if (!result.ok) {
         airdrop.status = 'funded'
-        console.error('Distribution failed:', result.error)
+        console.error('[Distribution] Main distribution failed:', result.error)
+        airdrop.updatedAt = Date.now()
+        return
     }
 
+    airdrop.distributionTxHash = result.txHash
+
+    // 2. Distribute tax to town members (if configured)
+    const taxAmount = BigInt(airdrop.taxAmount)
+    if (taxAmount > 0n && isEthAddress(AIRDROP_TAX_NFT_ADDRESS)) {
+        try {
+            console.log(`[Tax] Distributing ${taxAmount} tax to town members (NFT: ${AIRDROP_TAX_NFT_ADDRESS})`)
+
+            const taxHolders = await getMembershipNftHolderAddresses(
+                bot as AnyBot,
+                AIRDROP_TAX_NFT_ADDRESS as Address,
+            )
+
+            if (taxHolders.length > 0) {
+                const excludeAddresses = (process.env.AIRDROP_EXCLUDE_ADDRESSES ?? '')
+                    .split(',')
+                    .map((s) => s.trim())
+                    .filter(Boolean)
+
+                const taxRecipients = await getUniqueRecipientAddresses(
+                    bot as AnyBot,
+                    taxHolders.map((a) => a as string),
+                    {
+                        excludeAddresses: excludeAddresses.length > 0 ? excludeAddresses : undefined,
+                        onlyResolved: false,
+                    },
+                )
+
+                if (taxRecipients.length > 0) {
+                    const taxPerMember = taxAmount / BigInt(taxRecipients.length)
+                    if (taxPerMember > 0n) {
+                        const taxResult = await runBotDistribution(
+                            taxRecipients,
+                            taxPerMember,
+                            taxAmount,
+                            botAddress,
+                            tokenAddress,
+                        )
+                        if (taxResult.ok) {
+                            airdrop.taxDistributionTxHash = taxResult.txHash
+                            console.log(`[Tax] Distributed to ${taxRecipients.length} town members (tx: ${taxResult.txHash})`)
+                        } else {
+                            console.error('[Tax] Tax distribution failed:', taxResult.error)
+                        }
+                    }
+                } else {
+                    console.warn('[Tax] No valid tax recipients found')
+                }
+            } else {
+                console.warn('[Tax] No holders found for tax NFT contract')
+            }
+        } catch (err) {
+            console.error('[Tax] Error during tax distribution:', err)
+        }
+    }
+
+    airdrop.status = 'completed'
     airdrop.updatedAt = Date.now()
 }
 
@@ -655,6 +741,15 @@ app.get('/.well-known/farcaster.json', (c) => {
 // API Routes
 // ============================================================================
 
+// Public config (tax rate, etc.)
+app.get('/api/config', (c) => {
+    return c.json({
+        taxPercent: AIRDROP_TAX_PERCENT,
+        taxEnabled: AIRDROP_TAX_PERCENT > 0 && isEthAddress(AIRDROP_TAX_NFT_ADDRESS),
+        botAddress: bot.appAddress,
+    })
+})
+
 // Get NFT holder count
 app.get('/api/holders', async (c) => {
     const nftAddress = (process.env.AIRDROP_MEMBERSHIP_NFT_ADDRESS ?? '').trim()
@@ -696,25 +791,34 @@ app.get('/api/holders', async (c) => {
 app.post('/api/airdrop', async (c) => {
     try {
         const body = await c.req.json()
-        const { mode, totalAmount, creatorAddress } = body
+        const { airdropType, totalAmount, creatorAddress, currency } = body
 
-        if (!mode || !totalAmount || !creatorAddress) {
+        if (!airdropType || !totalAmount || !creatorAddress) {
             return c.json({ error: 'Missing required fields' }, 400)
+        }
+
+        if (airdropType !== 'space' && airdropType !== 'public') {
+            return c.json({ error: 'Invalid airdrop type (must be "space" or "public")' }, 400)
         }
 
         if (!isEthAddress(creatorAddress)) {
             return c.json({ error: 'Invalid creator address' }, 400)
         }
 
-        const nftAddress = (process.env.AIRDROP_MEMBERSHIP_NFT_ADDRESS ?? '').trim()
-        if (!isEthAddress(nftAddress)) {
-            return c.json({ error: 'AIRDROP_MEMBERSHIP_NFT_ADDRESS not configured' }, 500)
-        }
+        // Default to $TOWNS if no currency provided
+        const tokenAddress = (currency && isEthAddress(currency))
+            ? currency
+            : TOWNS_ADDRESS
 
         let recipientCount = 0
         let participants: string[] = []
 
-        if (mode === 'fixed') {
+        if (airdropType === 'space') {
+            const nftAddress = (process.env.AIRDROP_MEMBERSHIP_NFT_ADDRESS ?? '').trim()
+            if (!isEthAddress(nftAddress)) {
+                return c.json({ error: 'AIRDROP_MEMBERSHIP_NFT_ADDRESS not configured' }, 500)
+            }
+
             const holders = await getMembershipNftHolderAddresses(
                 bot as AnyBot,
                 nftAddress as Address,
@@ -738,15 +842,21 @@ app.post('/api/airdrop', async (c) => {
 
             recipientCount = participants.length
         }
+        // For 'public' airdrops, participants join later
 
         const totalBigInt = BigInt(totalAmount)
-        const amountPer = recipientCount > 0 ? totalBigInt / BigInt(recipientCount) : 0n
+        const { taxAmount, netAmount } = computeTax(totalBigInt)
+        const amountPer = recipientCount > 0 ? netAmount / BigInt(recipientCount) : 0n
 
         const airdrop: Airdrop = {
             id: generateId(),
             creatorAddress,
-            mode,
+            airdropType,
+            currency: tokenAddress,
             totalAmount,
+            taxPercent: AIRDROP_TAX_PERCENT,
+            taxAmount: taxAmount.toString(),
+            netAmount: netAmount.toString(),
             amountPerRecipient: amountPer.toString(),
             recipientCount,
             status: 'pending',
@@ -800,7 +910,8 @@ app.post('/api/airdrop/:id/confirm-deposit', async (c) => {
         airdrop.status = 'funded'
         airdrop.updatedAt = Date.now()
 
-        if (airdrop.mode === 'fixed' && airdrop.participants.length > 0) {
+        // Space airdrops auto-distribute once funded
+        if (airdrop.airdropType === 'space' && airdrop.participants.length > 0) {
             airdrop.status = 'distributing'
             runDistribution(airdrop).catch(console.error)
         }
@@ -812,15 +923,15 @@ app.post('/api/airdrop/:id/confirm-deposit', async (c) => {
     }
 })
 
-// Join airdrop (react mode)
+// Join airdrop (public only)
 app.post('/api/airdrop/:id/join', async (c) => {
     const airdrop = airdrops.get(c.req.param('id'))
     if (!airdrop) {
         return c.json({ error: 'Airdrop not found' }, 404)
     }
 
-    if (airdrop.mode !== 'react') {
-        return c.json({ error: 'Cannot join fixed airdrop' }, 400)
+    if (airdrop.airdropType !== 'public') {
+        return c.json({ error: 'Cannot join a space-members airdrop' }, 400)
     }
 
     if (airdrop.status !== 'funded') {
@@ -839,9 +950,10 @@ app.post('/api/airdrop/:id/join', async (c) => {
             airdrop.participants.push(userAddress.toLowerCase())
             airdrop.recipientCount = airdrop.participants.length
 
-            const totalBigInt = BigInt(airdrop.totalAmount)
+            // Recalculate per-recipient using net amount (after tax)
+            const net = BigInt(airdrop.netAmount)
             airdrop.amountPerRecipient = (
-                totalBigInt / BigInt(airdrop.recipientCount)
+                net / BigInt(airdrop.recipientCount)
             ).toString()
             airdrop.updatedAt = Date.now()
         }
@@ -891,6 +1003,25 @@ app.post('/api/airdrop/:id/cancel', async (c) => {
     airdrop.updatedAt = Date.now()
 
     return c.json(airdropToResponse(airdrop))
+})
+
+// List public airdrops (joinable)
+app.get('/api/public-airdrops', (c) => {
+    const publicDrops = [...airdrops.values()]
+        .filter((a) => a.airdropType === 'public' && a.status !== 'cancelled')
+        .sort((a, b) => b.createdAt - a.createdAt)
+        .map(airdropToResponse)
+    return c.json(publicDrops)
+})
+
+// List airdrops created by a specific user
+app.get('/api/my-airdrops/:address', (c) => {
+    const addr = c.req.param('address').toLowerCase()
+    const myDrops = [...airdrops.values()]
+        .filter((a) => a.creatorAddress.toLowerCase() === addr)
+        .sort((a, b) => b.createdAt - a.createdAt)
+        .map(airdropToResponse)
+    return c.json(myDrops)
 })
 
 // Health check
