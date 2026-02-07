@@ -14,6 +14,8 @@ export type MiniAppManifest = {
     name: string
     homeUrl: string
     iconUrl: string
+    imageUrl?: string
+    buttonTitle?: string
     splashImageUrl?: string
     splashBackgroundColor?: string
     webhookUrl?: string
@@ -44,6 +46,8 @@ export function generateManifest(): MiniAppManifest {
       name: '$TOWNS Airdrop',
       homeUrl: baseUrl,
       iconUrl: `${baseUrl}/icon.png`,
+      imageUrl: `${baseUrl}/og-image.png`,
+      buttonTitle: 'Launch Airdrop',
       splashImageUrl: `${baseUrl}/splash.png`,
       splashBackgroundColor: '#7C3AED',
       webhookUrl: `${baseUrl}/api/webhook`,
