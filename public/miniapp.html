@@ -1033,12 +1033,13 @@
             btn.disabled = true
 
             try {
-                // Try wallet SDK
-                const provider = sdk.wallet?.ethProvider
-                if (!provider) throw new Error('no-wallet')
+                // Use Towns Smart Wallet via sdk.wallet.ethProviderRequest
+                // See: https://docs.towns.com/build/miniapps/sdk#wallet-actions
+                if (!sdk.wallet?.ethProviderRequest) throw new Error('no-wallet')
 
-                const accounts = await provider.request({ method: 'eth_requestAccounts' })
-                if (!accounts || accounts.length === 0) throw new Error('no-wallet')
+                // Get user's Smart Wallet address from Towns context
+                const userAddress = context.towns?.user?.address
+                if (!userAddress) throw new Error('no-wallet')
 
                 const tokenAddr = currentAirdrop.currency || TOWNS_ADDRESS
                 const data = encodeErc20Transfer(botTreasuryAddress, currentAirdrop.totalAmount)
@@ -1046,10 +1047,11 @@
                 document.getElementById('depositProcessing').classList.remove('hidden')
                 document.getElementById('depositWalletSection').classList.add('hidden')
 
-                const txHash = await provider.request({
+                // Send ERC20 transfer via Towns Smart Wallet
+                const txHash = await sdk.wallet.ethProviderRequest({
                     method: 'eth_sendTransaction',
                     params: [{
-                        from: accounts[0],
+                        from: userAddress,
                         to: tokenAddr,
                         data: data,
                         value: '0x0',
@@ -1065,7 +1067,6 @@
                     document.getElementById('depositSuccess').textContent =
                         'Deposit confirmed! Distribution in progress...'
                     document.getElementById('depositSuccess').classList.remove('hidden')
-                    // Go to status screen after a moment
                     setTimeout(() => openStatusScreen(updated), 2000)
                 } else {
                     document.getElementById('depositSuccess').textContent =
@@ -1076,7 +1077,7 @@
 
             } catch (err) {
                 document.getElementById('depositProcessing').classList.add('hidden')
-                if (err.message === 'no-wallet' || err.message?.includes('not a function')) {
+                if (err.message === 'no-wallet' || err.message?.includes('not a function') || err.message?.includes('undefined')) {
                     // Fallback to manual deposit
                     document.getElementById('depositWalletSection').classList.add('hidden')
                     document.getElementById('depositManualSection').classList.remove('hidden')
