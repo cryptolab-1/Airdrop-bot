@@ -172,6 +172,7 @@ function airdropToResponse(a: Airdrop) {
     return {
         id: a.id,
         creatorAddress: a.creatorAddress,
+        creatorName: participantNames.get(a.creatorAddress.toLowerCase()) || null,
         airdropType: a.airdropType,
         spaceNftAddress: a.spaceNftAddress || null,
         currency: a.currency,
@@ -1015,7 +1016,7 @@ app.get('/api/holders', async (c) => {
 app.post('/api/airdrop', async (c) => {
     try {
         const body = await c.req.json()
-        const { airdropType, totalAmount, creatorAddress, currency, spaceId, currencyDecimals: rawDecimals } = body
+        const { airdropType, totalAmount, creatorAddress, currency, spaceId, currencyDecimals: rawDecimals, creatorDisplayName } = body
 
         if (!airdropType || !totalAmount || !creatorAddress) {
             return c.json({ error: 'Missing required fields' }, 400)
@@ -1128,6 +1129,11 @@ app.post('/api/airdrop', async (c) => {
         }
 
         airdrops.set(airdrop.id, airdrop)
+
+        // Store creator display name
+        if (creatorDisplayName) {
+            participantNames.set(creatorAddress.toLowerCase(), creatorDisplayName)
+        }
 
         return c.json(airdropToResponse(airdrop))
     } catch (err) {
@@ -1273,13 +1279,24 @@ app.post('/api/airdrop/:id/join', async (c) => {
 
     try {
         const body = await c.req.json()
-        const { userAddress, displayName } = body
+        const { userAddress, userId, displayName } = body
 
-        if (!userAddress || !isEthAddress(userAddress)) {
+        let walletAddress = ''
+
+        if (userAddress && isEthAddress(userAddress)) {
+            walletAddress = userAddress.toLowerCase()
+        } else if (userId && isEthAddress(userId)) {
+            // Resolve userId to smart wallet address
+            try {
+                const smartAccount = await getSmartAccountFromUserId(bot as AnyBot, { userId })
+                walletAddress = (smartAccount as string).toLowerCase()
+            } catch (err) {
+                console.error(`[Join] Failed to resolve userId ${userId}:`, err)
+                return c.json({ error: 'Failed to resolve wallet address' }, 500)
+            }
+        } else {
             return c.json({ error: 'Invalid wallet address' }, 400)
         }
-
-        const walletAddress = userAddress.toLowerCase()
 
         // Store display name
         if (displayName) {

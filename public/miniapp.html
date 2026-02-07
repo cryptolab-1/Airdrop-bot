@@ -873,12 +873,12 @@
             return await res.json()
         }
 
-        async function apiCreateAirdrop(airdropType, totalAmountWei, creatorAddress, currency, decimals) {
+        async function apiCreateAirdrop(airdropType, totalAmountWei, creatorAddress, currency, decimals, displayName) {
             const spaceAddr = getSpaceAddress()
             const res = await fetch('/api/airdrop', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ airdropType, totalAmount: totalAmountWei, creatorAddress, currency, spaceId: spaceAddr, currencyDecimals: decimals })
+                body: JSON.stringify({ airdropType, totalAmount: totalAmountWei, creatorAddress, currency, spaceId: spaceAddr, currencyDecimals: decimals, creatorDisplayName: displayName })
             })
             if (!res.ok) {
                 const err = await res.json().catch(() => ({}))
@@ -902,12 +902,13 @@
 
         async function apiJoinAirdrop(airdropId) {
             const userAddress = context?.towns?.user?.address || ''
+            const userId = context?.towns?.user?.userId || ''
             const displayName = context?.user?.displayName || ''
-            if (!userAddress) throw new Error('Wallet address not available')
+            if (!userAddress && !userId) throw new Error('No wallet or user ID available')
             const res = await fetch(`/api/airdrop/${airdropId}/join`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ userAddress, displayName })
+                body: JSON.stringify({ userAddress, userId, displayName })
             })
             if (!res.ok) {
                 const err = await res.json().catch(() => ({}))
@@ -1235,7 +1236,8 @@
                     wei,
                     context.towns.user.userId,
                     currency,
-                    getActiveDecimals()
+                    getActiveDecimals(),
+                    context?.user?.displayName || ''
                 )
                 currentAirdrop = airdrop
                 openDepositScreen(airdrop, amount)
@@ -1463,11 +1465,14 @@
                 }
 
                 const userId = context?.towns?.user?.userId?.toLowerCase() || ''
+                const userAddr = context?.towns?.user?.address?.toLowerCase() || ''
 
                 drops.forEach(drop => {
                     const isCreator = drop.creatorAddress?.toLowerCase() === userId
                     const canJoin = drop.status === 'funded' && drop.airdropType === 'public'
-                    const alreadyJoined = drop.participants?.some(p => p.toLowerCase() === userId)
+                    const alreadyJoined = drop.participants?.some(p =>
+                        p.toLowerCase() === userId || (userAddr && p.toLowerCase() === userAddr)
+                    )
 
                     const card = document.createElement('div')
                     card.className = 'airdrop-card'
@@ -1478,7 +1483,7 @@
                         </div>
                         <div class="airdrop-card-detail">${drop.recipientCount} participant${drop.recipientCount !== 1 ? 's' : ''}</div>
                         <div class="airdrop-card-detail">Per person: ${drop.recipientCount > 0 ? formatTokens(drop.amountPerRecipient, drop.currencyDecimals ?? 18) : '—'} tokens</div>
-                        <div class="airdrop-card-detail" style="opacity:0.4;">Created by ${shortAddr(drop.creatorAddress)}</div>
+                        <div class="airdrop-card-detail" style="opacity:0.4;">Created by ${drop.creatorName || shortAddr(drop.creatorAddress)}</div>
                         <div class="airdrop-card-actions">
                             ${canJoin && !alreadyJoined ? `<button class="sm" onclick="joinPublicDrop('${drop.id}')">Join</button>` : ''}
                             ${canJoin && alreadyJoined ? `<button class="sm secondary" disabled>Joined</button>` : ''}
@@ -1566,12 +1571,15 @@
             document.getElementById('statusRecipientCount').textContent = airdrop.recipientCount
 
             const userId = context?.towns?.user?.userId?.toLowerCase() || ''
+            const userAddr = context?.towns?.user?.address?.toLowerCase() || ''
             const isCreator = airdrop.creatorAddress?.toLowerCase() === userId
             const isPublic = airdrop.airdropType === 'public'
 
             // Join section (public, funded, not creator, not already joined)
             const joinSection = document.getElementById('statusJoinSection')
-            const alreadyJoined = airdrop.participants?.some(p => p.toLowerCase() === userId)
+            const alreadyJoined = airdrop.participants?.some(p =>
+                p.toLowerCase() === userId || (userAddr && p.toLowerCase() === userAddr)
+            )
             if (isPublic && airdrop.status === 'funded' && !alreadyJoined) {
                 joinSection.classList.remove('hidden')
             } else {
