@@ -220,23 +220,26 @@ honoApp.get('/embed-meta', (c) => {
 
 // OG image (3:2 ratio = 1200x800) - real PNG
 honoApp.get('/og-image.png', (c) => {
-    return new Response(OG_IMAGE, {
-        headers: { 'Content-Type': 'image/png', 'Cache-Control': 'public, max-age=86400' },
-    })
+    c.header('Content-Type', 'image/png')
+    c.header('Content-Length', OG_IMAGE.length.toString())
+    c.header('Cache-Control', 'public, max-age=86400')
+    return c.body(OG_IMAGE)
 })
 
 // Splash image (200x200) - real PNG
 honoApp.get('/splash.png', (c) => {
-    return new Response(SPLASH_IMAGE, {
-        headers: { 'Content-Type': 'image/png', 'Cache-Control': 'public, max-age=86400' },
-    })
+    c.header('Content-Type', 'image/png')
+    c.header('Content-Length', SPLASH_IMAGE.length.toString())
+    c.header('Cache-Control', 'public, max-age=86400')
+    return c.body(SPLASH_IMAGE)
 })
 
 // Icon (1024x1024) - real PNG
 honoApp.get('/icon.png', (c) => {
-    return new Response(ICON_IMAGE, {
-        headers: { 'Content-Type': 'image/png', 'Cache-Control': 'public, max-age=86400' },
-    })
+    c.header('Content-Type', 'image/png')
+    c.header('Content-Length', ICON_IMAGE.length.toString())
+    c.header('Cache-Control', 'public, max-age=86400')
+    return c.body(ICON_IMAGE)
 })
 
 // ============================================================================
