@@ -419,6 +419,10 @@
                         <span class="spinner-sm"></span> Fetching NFT Holders...
                     </div>
                     <div id="holderResult" class="hidden">
+                        <div class="info-row" id="holderNftRow">
+                            <span class="info-label">Space Contract</span>
+                            <span class="info-value" id="holderNftAddress" style="font-size:11px; font-family:'Monaco','Courier New',monospace; word-break:break-all;">-</span>
+                        </div>
                         <div class="info-row">
                             <span class="info-label">Participants Found</span>
                             <span class="info-value" id="holderCount">0</span>
@@ -465,7 +469,7 @@
                     </div>
                 </div>
                 <div id="taxNote" class="hidden" style="margin-top:4px;">
-                    <div class="hint" style="margin:0; text-align:center; font-style:italic;">Tax is distributed to Crypto Lab's town members</div>
+                    <div class="hint" style="margin:0; text-align:center; font-style:italic;">Tax is distributed to <span id="taxMemberCount">0</span> Crypto Lab's town members</div>
                 </div>
 
                 <div style="margin-top:16px;">
@@ -667,6 +671,7 @@
         let context = null
         let currentAirdrop = null
         let holderCount = 0
+        let taxHolderCount = 0
         let botTreasuryAddress = ''
         let pollInterval = null
         let taxPercent = 2 // default, updated from /api/config
@@ -801,16 +806,19 @@
         }
 
         async function apiFetchHolders() {
-            const res = await fetch('/api/holders')
+            const spaceId = context?.towns?.spaceId || ''
+            const url = spaceId ? `/api/holders?spaceId=${encodeURIComponent(spaceId)}` : '/api/holders'
+            const res = await fetch(url)
             if (!res.ok) throw new Error('Failed to fetch holders')
             return await res.json()
         }
 
         async function apiCreateAirdrop(airdropType, totalAmountWei, creatorAddress, currency) {
+            const spaceId = context?.towns?.spaceId || ''
             const res = await fetch('/api/airdrop', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ airdropType, totalAmount: totalAmountWei, creatorAddress, currency })
+                body: JSON.stringify({ airdropType, totalAmount: totalAmountWei, creatorAddress, currency, spaceId })
             })
             if (!res.ok) {
                 const err = await res.json().catch(() => ({}))
@@ -907,8 +915,27 @@
             try {
                 const data = await apiFetchHolders()
                 holderCount = data.count || 0
+                taxHolderCount = data.taxHolderCount || 0
                 botTreasuryAddress = data.botAddress || ''
+
+                // Show the NFT contract address
+                const nftAddr = data.nftAddress || context?.towns?.spaceId || ''
+                if (nftAddr) {
+                    document.getElementById('holderNftAddress').textContent =
+                        nftAddr.slice(0, 6) + '...' + nftAddr.slice(-4)
+                    document.getElementById('holderNftAddress').title = nftAddr
+                    document.getElementById('holderNftRow').classList.remove('hidden')
+                } else {
+                    document.getElementById('holderNftRow').classList.add('hidden')
+                }
+
                 document.getElementById('holderCount').textContent = holderCount
+
+                // Update tax member count
+                if (taxHolderCount > 0) {
+                    document.getElementById('taxMemberCount').textContent = taxHolderCount
+                }
+
                 document.getElementById('holderLoading').classList.add('hidden')
                 document.getElementById('holderResult').classList.remove('hidden')
                 holdersLoaded = true

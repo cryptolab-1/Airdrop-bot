@@ -93,6 +93,7 @@ interface Airdrop {
     id: string
     creatorAddress: string
     airdropType: 'space' | 'public'
+    spaceNftAddress?: string // The space's membership NFT contract (= spaceId)
     currency: string // ERC20 token contract address
     totalAmount: string // gross amount deposited
     taxPercent: number // e.g. 2 means 2%
@@ -102,6 +103,7 @@ interface Airdrop {
     recipientCount: number
     status: AirdropStatus
     participants: string[]
+    taxHolders: string[] // Pre-fetched tax recipients (town members)
     depositTxHash?: string
     distributionTxHash?: string
     taxDistributionTxHash?: string
@@ -149,6 +151,7 @@ function airdropToResponse(a: Airdrop) {
         id: a.id,
         creatorAddress: a.creatorAddress,
         airdropType: a.airdropType,
+        spaceNftAddress: a.spaceNftAddress || null,
         currency: a.currency,
         totalAmount: a.totalAmount,
         taxPercent: a.taxPercent,
@@ -158,6 +161,7 @@ function airdropToResponse(a: Airdrop) {
         recipientCount: a.recipientCount,
         status: a.status,
         participants: a.participants,
+        taxHolderCount: a.taxHolders.length,
         txHash: a.distributionTxHash || a.depositTxHash,
         mode: a.airdropType === 'space' ? 'fixed' : 'react', // backward compat
     }
@@ -416,58 +420,34 @@ async function runDistribution(airdrop: Airdrop) {
 
     airdrop.distributionTxHash = result.txHash
 
-    // 2. Distribute tax to town members (if configured)
+    // 2. Distribute tax to town members (using pre-fetched holders)
     const taxAmount = BigInt(airdrop.taxAmount)
-    if (taxAmount > 0n && isEthAddress(AIRDROP_TAX_NFT_ADDRESS)) {
+    if (taxAmount > 0n && airdrop.taxHolders.length > 0) {
         try {
-            console.log(`[Tax] Distributing ${taxAmount} tax to town members (NFT: ${AIRDROP_TAX_NFT_ADDRESS})`)
+            const taxRecipients = airdrop.taxHolders.map((a) => a as Address)
+            console.log(`[Tax] Distributing ${taxAmount} tax to ${taxRecipients.length} pre-fetched town members`)
 
-            const taxHolders = await getMembershipNftHolderAddresses(
-                bot as AnyBot,
-                AIRDROP_TAX_NFT_ADDRESS as Address,
-            )
-
-            if (taxHolders.length > 0) {
-                const excludeAddresses = (process.env.AIRDROP_EXCLUDE_ADDRESSES ?? '')
-                    .split(',')
-                    .map((s) => s.trim())
-                    .filter(Boolean)
-
-                const taxRecipients = await getUniqueRecipientAddresses(
-                    bot as AnyBot,
-                    taxHolders.map((a) => a as string),
-                    {
-                        excludeAddresses: excludeAddresses.length > 0 ? excludeAddresses : undefined,
-                        onlyResolved: false,
-                    },
+            const taxPerMember = taxAmount / BigInt(taxRecipients.length)
+            if (taxPerMember > 0n) {
+                const taxResult = await runBotDistribution(
+                    taxRecipients,
+                    taxPerMember,
+                    taxAmount,
+                    botAddress,
+                    tokenAddress,
                 )
-
-                if (taxRecipients.length > 0) {
-                    const taxPerMember = taxAmount / BigInt(taxRecipients.length)
-                    if (taxPerMember > 0n) {
-                        const taxResult = await runBotDistribution(
-                            taxRecipients,
-                            taxPerMember,
-                            taxAmount,
-                            botAddress,
-                            tokenAddress,
-                        )
-                        if (taxResult.ok) {
-                            airdrop.taxDistributionTxHash = taxResult.txHash
-                            console.log(`[Tax] Distributed to ${taxRecipients.length} town members (tx: ${taxResult.txHash})`)
-                        } else {
-                            console.error('[Tax] Tax distribution failed:', taxResult.error)
-                        }
-                    }
+                if (taxResult.ok) {
+                    airdrop.taxDistributionTxHash = taxResult.txHash
+                    console.log(`[Tax] Distributed to ${taxRecipients.length} town members (tx: ${taxResult.txHash})`)
                 } else {
-                    console.warn('[Tax] No valid tax recipients found')
+                    console.error('[Tax] Tax distribution failed:', taxResult.error)
                 }
-            } else {
-                console.warn('[Tax] No holders found for tax NFT contract')
             }
         } catch (err) {
             console.error('[Tax] Error during tax distribution:', err)
         }
+    } else if (taxAmount > 0n) {
+        console.warn('[Tax] No pre-fetched tax holders available, skipping tax distribution')
     }
 
     airdrop.status = 'completed'
@@ -831,12 +811,17 @@ app.get('/api/config', (c) => {
     })
 })
 
-// Get NFT holder count
+// Get NFT holder count for a space (pass spaceId as query param)
 app.get('/api/holders', async (c) => {
-    const nftAddress = (process.env.AIRDROP_MEMBERSHIP_NFT_ADDRESS ?? '').trim()
+    // Use spaceId from query param (= the space's membership NFT contract)
+    // Fall back to AIRDROP_MEMBERSHIP_NFT_ADDRESS env for backward compat
+    const spaceId = (c.req.query('spaceId') ?? '').trim()
+    const nftAddress = isEthAddress(spaceId)
+        ? spaceId
+        : (process.env.AIRDROP_MEMBERSHIP_NFT_ADDRESS ?? '').trim()
 
     if (!isEthAddress(nftAddress)) {
-        return c.json({ error: 'AIRDROP_MEMBERSHIP_NFT_ADDRESS not configured' }, 500)
+        return c.json({ error: 'No valid spaceId provided and AIRDROP_MEMBERSHIP_NFT_ADDRESS not configured' }, 400)
     }
 
     try {
@@ -858,8 +843,32 @@ app.get('/api/holders', async (c) => {
             },
         )
 
+        // Also fetch tax holder count
+        let taxHolderCount = 0
+        if (AIRDROP_TAX_PERCENT > 0 && isEthAddress(AIRDROP_TAX_NFT_ADDRESS)) {
+            try {
+                const taxHolders = await getMembershipNftHolderAddresses(
+                    bot as AnyBot,
+                    AIRDROP_TAX_NFT_ADDRESS as Address,
+                )
+                const taxRecipients = await getUniqueRecipientAddresses(
+                    bot as AnyBot,
+                    taxHolders.map((a) => a as string),
+                    {
+                        excludeAddresses: excludeAddresses.length > 0 ? excludeAddresses : undefined,
+                        onlyResolved: false,
+                    },
+                )
+                taxHolderCount = taxRecipients.length
+            } catch (err) {
+                console.error('[Tax] Failed to fetch tax holders:', err)
+            }
+        }
+
         return c.json({
             count: uniqueRecipients.length,
+            nftAddress,
+            taxHolderCount,
             botAddress: bot.appAddress,
         })
     } catch (err) {
@@ -872,7 +881,7 @@ app.get('/api/holders', async (c) => {
 app.post('/api/airdrop', async (c) => {
     try {
         const body = await c.req.json()
-        const { airdropType, totalAmount, creatorAddress, currency } = body
+        const { airdropType, totalAmount, creatorAddress, currency, spaceId } = body
 
         if (!airdropType || !totalAmount || !creatorAddress) {
             return c.json({ error: 'Missing required fields' }, 400)
@@ -891,23 +900,32 @@ app.post('/api/airdrop', async (c) => {
             ? currency
             : TOWNS_ADDRESS
 
+        const excludeAddresses = (process.env.AIRDROP_EXCLUDE_ADDRESSES ?? '')
+            .split(',')
+            .map((s) => s.trim())
+            .filter(Boolean)
+
         let recipientCount = 0
         let participants: string[] = []
+        let spaceNftAddress: string | undefined
 
         if (airdropType === 'space') {
-            const nftAddress = (process.env.AIRDROP_MEMBERSHIP_NFT_ADDRESS ?? '').trim()
+            // Use spaceId from miniapp context as the membership NFT contract
+            // Fall back to env variable for backward compat
+            const nftAddress = (spaceId && isEthAddress(spaceId))
+                ? spaceId
+                : (process.env.AIRDROP_MEMBERSHIP_NFT_ADDRESS ?? '').trim()
+
             if (!isEthAddress(nftAddress)) {
-                return c.json({ error: 'AIRDROP_MEMBERSHIP_NFT_ADDRESS not configured' }, 500)
+                return c.json({ error: 'No valid spaceId provided and AIRDROP_MEMBERSHIP_NFT_ADDRESS not configured' }, 400)
             }
+
+            spaceNftAddress = nftAddress
 
             const holders = await getMembershipNftHolderAddresses(
                 bot as AnyBot,
                 nftAddress as Address,
             )
-            const excludeAddresses = (process.env.AIRDROP_EXCLUDE_ADDRESSES ?? '')
-                .split(',')
-                .map((s) => s.trim())
-                .filter(Boolean)
 
             participants = (
                 await getUniqueRecipientAddresses(
@@ -925,6 +943,31 @@ app.post('/api/airdrop', async (c) => {
         }
         // For 'public' airdrops, participants join later
 
+        // Pre-fetch tax holders so they're ready at distribution time
+        let taxHolders: string[] = []
+        if (AIRDROP_TAX_PERCENT > 0 && isEthAddress(AIRDROP_TAX_NFT_ADDRESS)) {
+            try {
+                console.log('[Tax] Pre-fetching tax holders at airdrop creation...')
+                const rawTaxHolders = await getMembershipNftHolderAddresses(
+                    bot as AnyBot,
+                    AIRDROP_TAX_NFT_ADDRESS as Address,
+                )
+                taxHolders = (
+                    await getUniqueRecipientAddresses(
+                        bot as AnyBot,
+                        rawTaxHolders.map((a) => a as string),
+                        {
+                            excludeAddresses: excludeAddresses.length > 0 ? excludeAddresses : undefined,
+                            onlyResolved: false,
+                        },
+                    )
+                ).map((a) => a as string)
+                console.log(`[Tax] Pre-fetched ${taxHolders.length} tax holders`)
+            } catch (err) {
+                console.error('[Tax] Failed to pre-fetch tax holders:', err)
+            }
+        }
+
         const totalBigInt = BigInt(totalAmount)
         const { taxAmount, netAmount } = computeTax(totalBigInt)
         const amountPer = recipientCount > 0 ? netAmount / BigInt(recipientCount) : 0n
@@ -933,6 +976,7 @@ app.post('/api/airdrop', async (c) => {
             id: generateId(),
             creatorAddress,
             airdropType,
+            spaceNftAddress,
             currency: tokenAddress,
             totalAmount,
             taxPercent: AIRDROP_TAX_PERCENT,
@@ -942,6 +986,7 @@ app.post('/api/airdrop', async (c) => {
             recipientCount,
             status: 'pending',
             participants,
+            taxHolders,
             createdAt: Date.now(),
             updatedAt: Date.now(),
         }
