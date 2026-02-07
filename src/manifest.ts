@@ -67,7 +67,7 @@ export function generateEmbedMeta(): object {
     button: {
       title: '💸 Start',
       action: {
-        type: 'launch_frame',
+        type: 'launch_miniapp',
         name: '$TOWNS Airdrop',
         url: baseUrl,
         splashImageUrl: `${baseUrl}/splash.png`,
