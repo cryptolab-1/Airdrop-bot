@@ -1,0 +1,778 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>$TOWNS Airdrop</title>
+
+    <!-- Farcaster Mini App embed metadata (type MUST be launch_miniapp for Towns) -->
+    <meta name="fc:miniapp" content='{"version":"1","imageUrl":"https://airdrop-bot-tvql.onrender.com/image.png","button":{"title":"Launch Airdrop","action":{"type":"launch_miniapp","name":"$TOWNS Airdrop","url":"https://airdrop-bot-tvql.onrender.com/miniapp.html","splashBackgroundColor":"#7C3AED"}}}' />
+
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        @keyframes gradientShift {
+            0% { background-position: 0% 50%; }
+            50% { background-position: 100% 50%; }
+            100% { background-position: 0% 50%; }
+        }
+
+        @keyframes slideIn {
+            from { opacity: 0; transform: translateY(30px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        @keyframes pulse {
+            0%, 100% { transform: scale(1); }
+            50% { transform: scale(1.02); }
+        }
+
+        body {
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: linear-gradient(-45deg, #1a0533, #2d1b69, #4c1d95, #6d28d9);
+            background-size: 400% 400%;
+            animation: gradientShift 15s ease infinite;
+            color: white;
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+            overflow-x: hidden;
+        }
+
+        #loading {
+            text-align: center;
+            font-size: 20px;
+            animation: slideIn 0.5s ease;
+        }
+
+        .spinner {
+            border: 5px solid rgba(255, 255, 255, 0.2);
+            border-top: 5px solid white;
+            border-radius: 50%;
+            width: 50px;
+            height: 50px;
+            animation: spin 0.8s linear infinite;
+            margin: 20px auto;
+        }
+
+        #app {
+            display: none;
+            text-align: center;
+            width: 100%;
+            max-width: 500px;
+            animation: slideIn 0.6s ease;
+        }
+
+        .card {
+            background: rgba(15, 10, 30, 0.85);
+            backdrop-filter: blur(20px);
+            border-radius: 20px;
+            padding: 30px 24px;
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4), 0 0 0 1px rgba(139, 92, 246, 0.3);
+            border: 1px solid rgba(139, 92, 246, 0.3);
+            margin-bottom: 16px;
+        }
+
+        h1 {
+            font-size: 36px;
+            font-weight: 800;
+            margin-bottom: 8px;
+            background: linear-gradient(135deg, #a78bfa, #c4b5fd);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+
+        .subtitle {
+            font-size: 15px;
+            opacity: 0.8;
+            margin-bottom: 24px;
+        }
+
+        .info-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 12px 16px;
+            background: rgba(139, 92, 246, 0.1);
+            border-radius: 12px;
+            margin-bottom: 10px;
+            border: 1px solid rgba(139, 92, 246, 0.2);
+        }
+
+        .info-label {
+            font-size: 13px;
+            opacity: 0.7;
+        }
+
+        .info-value {
+            font-size: 15px;
+            font-weight: 600;
+            color: #c4b5fd;
+        }
+
+        .user-id {
+            font-family: 'Monaco', 'Courier New', monospace;
+            font-size: 11px;
+            word-break: break-all;
+            opacity: 0.5;
+            margin-top: 8px;
+            background: rgba(0, 0, 0, 0.2);
+            padding: 8px;
+            border-radius: 8px;
+        }
+
+        button {
+            background: linear-gradient(135deg, #8b5cf6, #7c3aed);
+            color: white;
+            border: none;
+            padding: 16px 36px;
+            font-size: 16px;
+            font-weight: 700;
+            border-radius: 12px;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            box-shadow: 0 4px 15px rgba(124, 58, 237, 0.4);
+            margin: 8px;
+            width: 100%;
+            max-width: 300px;
+        }
+
+        button:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 6px 20px rgba(124, 58, 237, 0.6);
+        }
+
+        button:active {
+            transform: translateY(0);
+        }
+
+        button:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+            transform: none;
+        }
+
+        button.secondary {
+            background: rgba(139, 92, 246, 0.2);
+            border: 1px solid rgba(139, 92, 246, 0.4);
+            box-shadow: none;
+        }
+
+        button.secondary:hover {
+            background: rgba(139, 92, 246, 0.3);
+            box-shadow: none;
+        }
+
+        input, select {
+            width: 100%;
+            padding: 14px 16px;
+            border-radius: 12px;
+            border: 1px solid rgba(139, 92, 246, 0.3);
+            background: rgba(0, 0, 0, 0.3);
+            color: white;
+            font-size: 15px;
+            margin-bottom: 12px;
+            outline: none;
+            transition: border-color 0.2s;
+        }
+
+        input:focus, select:focus {
+            border-color: #8b5cf6;
+        }
+
+        select option {
+            background: #1a0533;
+            color: white;
+        }
+
+        label {
+            display: block;
+            text-align: left;
+            font-size: 13px;
+            font-weight: 600;
+            margin-bottom: 6px;
+            opacity: 0.8;
+        }
+
+        .form-group {
+            margin-bottom: 16px;
+        }
+
+        .status-badge {
+            display: inline-block;
+            padding: 6px 16px;
+            border-radius: 20px;
+            font-size: 13px;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .status-pending { background: rgba(234, 179, 8, 0.2); color: #fbbf24; border: 1px solid rgba(234, 179, 8, 0.3); }
+        .status-funded { background: rgba(59, 130, 246, 0.2); color: #60a5fa; border: 1px solid rgba(59, 130, 246, 0.3); }
+        .status-distributing { background: rgba(139, 92, 246, 0.2); color: #a78bfa; border: 1px solid rgba(139, 92, 246, 0.3); animation: pulse 1.5s infinite; }
+        .status-completed { background: rgba(34, 197, 94, 0.2); color: #4ade80; border: 1px solid rgba(34, 197, 94, 0.3); }
+        .status-cancelled { background: rgba(239, 68, 68, 0.2); color: #f87171; border: 1px solid rgba(239, 68, 68, 0.3); }
+
+        .participants-list {
+            max-height: 200px;
+            overflow-y: auto;
+            text-align: left;
+            margin-top: 12px;
+        }
+
+        .participant {
+            font-family: monospace;
+            font-size: 12px;
+            padding: 6px 10px;
+            background: rgba(0, 0, 0, 0.2);
+            border-radius: 6px;
+            margin-bottom: 4px;
+            word-break: break-all;
+        }
+
+        .error {
+            background: rgba(239, 68, 68, 0.2);
+            padding: 12px;
+            border-radius: 12px;
+            margin-top: 12px;
+            border: 1px solid rgba(239, 68, 68, 0.4);
+            font-size: 14px;
+        }
+
+        .success {
+            background: rgba(34, 197, 94, 0.2);
+            padding: 12px;
+            border-radius: 12px;
+            margin-top: 12px;
+            border: 1px solid rgba(34, 197, 94, 0.4);
+            font-size: 14px;
+        }
+
+        .hidden { display: none !important; }
+
+        .big-number {
+            font-size: 48px;
+            font-weight: 900;
+            background: linear-gradient(135deg, #a78bfa, #c4b5fd);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+            margin: 16px 0;
+        }
+
+        a {
+            color: #a78bfa;
+            text-decoration: none;
+        }
+
+        a:hover {
+            text-decoration: underline;
+        }
+
+        .poll-status {
+            font-size: 12px;
+            opacity: 0.5;
+            margin-top: 8px;
+        }
+    </style>
+</head>
+<body>
+
+    <!-- Loading screen -->
+    <div id="loading">
+        <div class="spinner"></div>
+        <div>Loading Airdrop App...</div>
+    </div>
+
+    <!-- Main app -->
+    <div id="app">
+
+        <!-- Screen: Create Airdrop -->
+        <div id="createScreen" class="card">
+            <h1>$TOWNS Airdrop</h1>
+            <div class="subtitle">Distribute tokens to NFT holders</div>
+
+            <div class="info-row">
+                <span class="info-label">Connected</span>
+                <span class="info-value" id="playerName">Loading...</span>
+            </div>
+            <div class="user-id" id="userId"></div>
+
+            <div class="info-row" style="margin-top: 16px;">
+                <span class="info-label">NFT Holders</span>
+                <span class="info-value" id="holderCount">Loading...</span>
+            </div>
+            <div class="info-row">
+                <span class="info-label">Bot Treasury</span>
+                <span class="info-value" id="botAddress" style="font-size: 11px; font-family: monospace;"></span>
+            </div>
+
+            <div style="margin-top: 24px;">
+                <div class="form-group">
+                    <label>Airdrop Mode</label>
+                    <select id="modeSelect">
+                        <option value="fixed">Fixed - Send to all NFT holders now</option>
+                        <option value="react">React - Users join, then distribute</option>
+                    </select>
+                </div>
+
+                <div class="form-group">
+                    <label>Total Amount ($TOWNS in wei)</label>
+                    <input type="text" id="amountInput" placeholder="e.g. 1000000000000000000 (1 TOWNS)" />
+                </div>
+
+                <button id="createBtn" disabled>Create Airdrop</button>
+            </div>
+
+            <div id="createError" class="error hidden"></div>
+        </div>
+
+        <!-- Screen: Airdrop Status -->
+        <div id="statusScreen" class="card hidden">
+            <h1>Airdrop Status</h1>
+
+            <div style="margin: 16px 0;">
+                <span class="status-badge" id="statusBadge">PENDING</span>
+            </div>
+
+            <div class="info-row">
+                <span class="info-label">Total Amount</span>
+                <span class="info-value" id="statusTotal">-</span>
+            </div>
+            <div class="info-row">
+                <span class="info-label">Per Recipient</span>
+                <span class="info-value" id="statusPerRecipient">-</span>
+            </div>
+            <div class="info-row">
+                <span class="info-label">Recipients</span>
+                <span class="info-value" id="statusRecipientCount">0</span>
+            </div>
+
+            <div id="depositSection" class="hidden" style="margin-top: 20px;">
+                <div style="font-size: 14px; opacity: 0.8; margin-bottom: 12px;">
+                    Send <strong id="depositAmount">-</strong> $TOWNS to the bot treasury, then paste the tx hash:
+                </div>
+                <input type="text" id="txHashInput" placeholder="0x... transaction hash" />
+                <button id="confirmDepositBtn">Confirm Deposit</button>
+            </div>
+
+            <div id="joinSection" class="hidden" style="margin-top: 20px;">
+                <button id="joinBtn">Join Airdrop</button>
+                <div class="participants-list" id="participantsList"></div>
+            </div>
+
+            <div id="launchSection" class="hidden" style="margin-top: 20px;">
+                <button id="launchBtn">Distribute Now</button>
+            </div>
+
+            <div id="resultSection" class="hidden" style="margin-top: 20px;">
+                <div id="resultMessage"></div>
+            </div>
+
+            <div id="statusError" class="error hidden"></div>
+            <div class="poll-status" id="pollStatus"></div>
+
+            <div style="margin-top: 20px;">
+                <button class="secondary" id="newAirdropBtn">New Airdrop</button>
+                <button class="secondary" id="closeBtn">Close</button>
+            </div>
+        </div>
+    </div>
+
+    <script type="module">
+        import { sdk } from 'https://esm.sh/@farcaster/miniapp-sdk@0.2.1'
+
+        // ---- State ----
+        let context = null
+        let currentAirdrop = null
+        let pollInterval = null
+
+        // ---- SDK Init (same pattern as reflex-game) ----
+        async function initSDK() {
+            try {
+                // Step 1: Call ready() with timeout
+                try {
+                    await Promise.race([
+                        sdk.actions.ready(),
+                        new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 8000))
+                    ])
+                } catch (e) {
+                    console.warn('ready() timed out, continuing...', e)
+                }
+
+                // Step 2: Get context
+                context = await Promise.race([
+                    sdk.context,
+                    new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 10000))
+                ])
+
+                // Step 3: Validate
+                if (!context?.towns?.user?.userId) {
+                    throw new Error('Missing Towns user data')
+                }
+
+                return context
+            } catch (error) {
+                console.error('SDK init failed:', error)
+                throw error
+            }
+        }
+
+        // ---- Helpers ----
+        function showError(elementId, message) {
+            const el = document.getElementById(elementId)
+            el.textContent = message
+            el.classList.remove('hidden')
+        }
+
+        function hideError(elementId) {
+            document.getElementById(elementId).classList.add('hidden')
+        }
+
+        function formatWei(wei) {
+            try {
+                const num = BigInt(wei)
+                const eth = Number(num) / 1e18
+                if (eth >= 1) return eth.toFixed(4) + ' TOWNS'
+                return wei + ' wei'
+            } catch {
+                return wei
+            }
+        }
+
+        // ---- API calls ----
+        async function fetchHolders() {
+            try {
+                const res = await fetch('/api/holders')
+                if (!res.ok) throw new Error('Failed to fetch holders')
+                return await res.json()
+            } catch (err) {
+                console.error('Holders fetch error:', err)
+                return { count: 0, botAddress: '...' }
+            }
+        }
+
+        async function createAirdrop(mode, totalAmount, creatorAddress) {
+            const res = await fetch('/api/airdrop', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ mode, totalAmount, creatorAddress })
+            })
+            if (!res.ok) {
+                const err = await res.json()
+                throw new Error(err.error || 'Failed to create airdrop')
+            }
+            return await res.json()
+        }
+
+        async function confirmDeposit(airdropId, txHash) {
+            const res = await fetch(`/api/airdrop/${airdropId}/confirm-deposit`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ txHash })
+            })
+            if (!res.ok) {
+                const err = await res.json()
+                throw new Error(err.error || 'Failed to confirm deposit')
+            }
+            return await res.json()
+        }
+
+        async function joinAirdrop(airdropId, userAddress) {
+            const res = await fetch(`/api/airdrop/${airdropId}/join`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ userAddress })
+            })
+            if (!res.ok) {
+                const err = await res.json()
+                throw new Error(err.error || 'Failed to join airdrop')
+            }
+            return await res.json()
+        }
+
+        async function launchAirdrop(airdropId) {
+            const res = await fetch(`/api/airdrop/${airdropId}/launch`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' }
+            })
+            if (!res.ok) {
+                const err = await res.json()
+                throw new Error(err.error || 'Failed to launch airdrop')
+            }
+            return await res.json()
+        }
+
+        async function getAirdrop(airdropId) {
+            const res = await fetch(`/api/airdrop/${airdropId}`)
+            if (!res.ok) throw new Error('Failed to fetch airdrop')
+            return await res.json()
+        }
+
+        // ---- UI Updates ----
+        function showCreateScreen() {
+            document.getElementById('createScreen').classList.remove('hidden')
+            document.getElementById('statusScreen').classList.add('hidden')
+            if (pollInterval) { clearInterval(pollInterval); pollInterval = null }
+            currentAirdrop = null
+        }
+
+        function showStatusScreen(airdrop) {
+            currentAirdrop = airdrop
+            document.getElementById('createScreen').classList.add('hidden')
+            document.getElementById('statusScreen').classList.remove('hidden')
+            updateStatusUI(airdrop)
+            startPolling(airdrop.id)
+        }
+
+        function updateStatusUI(airdrop) {
+            // Badge
+            const badge = document.getElementById('statusBadge')
+            badge.textContent = airdrop.status.toUpperCase()
+            badge.className = 'status-badge status-' + airdrop.status
+
+            // Info
+            document.getElementById('statusTotal').textContent = formatWei(airdrop.totalAmount)
+            document.getElementById('statusPerRecipient').textContent = formatWei(airdrop.amountPerRecipient)
+            document.getElementById('statusRecipientCount').textContent = airdrop.recipientCount
+
+            // Sections visibility
+            const isCreator = context?.towns?.user?.userId?.toLowerCase() === airdrop.creatorAddress?.toLowerCase()
+
+            // Deposit section (show for creator when pending)
+            const depositSection = document.getElementById('depositSection')
+            if (airdrop.status === 'pending' && isCreator) {
+                depositSection.classList.remove('hidden')
+                document.getElementById('depositAmount').textContent = formatWei(airdrop.totalAmount)
+            } else {
+                depositSection.classList.add('hidden')
+            }
+
+            // Join section (show for react mode when funded)
+            const joinSection = document.getElementById('joinSection')
+            if (airdrop.status === 'funded' && airdrop.mode === 'react') {
+                joinSection.classList.remove('hidden')
+                updateParticipantsList(airdrop.participants)
+            } else {
+                joinSection.classList.add('hidden')
+            }
+
+            // Launch section (show for creator when funded in react mode)
+            const launchSection = document.getElementById('launchSection')
+            if (airdrop.status === 'funded' && airdrop.mode === 'react' && isCreator && airdrop.recipientCount > 0) {
+                launchSection.classList.remove('hidden')
+            } else {
+                launchSection.classList.add('hidden')
+            }
+
+            // Result section
+            const resultSection = document.getElementById('resultSection')
+            if (airdrop.status === 'completed') {
+                resultSection.classList.remove('hidden')
+                const txLink = airdrop.txHash
+                    ? `<a href="https://basescan.org/tx/${airdrop.txHash}" target="_blank">View on Basescan</a>`
+                    : ''
+                document.getElementById('resultMessage').innerHTML =
+                    `<div class="success">Airdrop completed! ${airdrop.recipientCount} recipients received tokens. ${txLink}</div>`
+            } else if (airdrop.status === 'distributing') {
+                resultSection.classList.remove('hidden')
+                document.getElementById('resultMessage').innerHTML =
+                    '<div style="opacity: 0.8;">Distributing tokens... please wait.</div>'
+            } else {
+                resultSection.classList.add('hidden')
+            }
+        }
+
+        function updateParticipantsList(participants) {
+            const list = document.getElementById('participantsList')
+            if (!participants || participants.length === 0) {
+                list.innerHTML = '<div style="opacity: 0.5; font-size: 13px; padding: 8px;">No participants yet</div>'
+                return
+            }
+            list.innerHTML = participants.map(p =>
+                `<div class="participant">${p}</div>`
+            ).join('')
+        }
+
+        // ---- Polling ----
+        function startPolling(airdropId) {
+            if (pollInterval) clearInterval(pollInterval)
+            pollInterval = setInterval(async () => {
+                try {
+                    const airdrop = await getAirdrop(airdropId)
+                    currentAirdrop = airdrop
+                    updateStatusUI(airdrop)
+                    document.getElementById('pollStatus').textContent = 'Last updated: ' + new Date().toLocaleTimeString()
+
+                    // Stop polling when completed or cancelled
+                    if (airdrop.status === 'completed' || airdrop.status === 'cancelled') {
+                        clearInterval(pollInterval)
+                        pollInterval = null
+                    }
+                } catch (err) {
+                    console.error('Poll error:', err)
+                }
+            }, 3000)
+        }
+
+        // ---- Event Listeners ----
+        document.getElementById('createBtn').addEventListener('click', async () => {
+            hideError('createError')
+            const mode = document.getElementById('modeSelect').value
+            const amount = document.getElementById('amountInput').value.trim()
+
+            if (!amount) {
+                showError('createError', 'Please enter an amount')
+                return
+            }
+
+            try {
+                BigInt(amount)
+            } catch {
+                showError('createError', 'Invalid amount - must be a number in wei')
+                return
+            }
+
+            const btn = document.getElementById('createBtn')
+            btn.disabled = true
+            btn.textContent = 'Creating...'
+
+            try {
+                const airdrop = await createAirdrop(
+                    mode,
+                    amount,
+                    context.towns.user.userId
+                )
+                showStatusScreen(airdrop)
+            } catch (err) {
+                showError('createError', err.message)
+            } finally {
+                btn.disabled = false
+                btn.textContent = 'Create Airdrop'
+            }
+        })
+
+        document.getElementById('confirmDepositBtn').addEventListener('click', async () => {
+            if (!currentAirdrop) return
+            hideError('statusError')
+
+            const txHash = document.getElementById('txHashInput').value.trim()
+            if (!txHash || !txHash.startsWith('0x')) {
+                showError('statusError', 'Please enter a valid transaction hash')
+                return
+            }
+
+            const btn = document.getElementById('confirmDepositBtn')
+            btn.disabled = true
+            btn.textContent = 'Confirming...'
+
+            try {
+                const airdrop = await confirmDeposit(currentAirdrop.id, txHash)
+                currentAirdrop = airdrop
+                updateStatusUI(airdrop)
+            } catch (err) {
+                showError('statusError', err.message)
+            } finally {
+                btn.disabled = false
+                btn.textContent = 'Confirm Deposit'
+            }
+        })
+
+        document.getElementById('joinBtn').addEventListener('click', async () => {
+            if (!currentAirdrop) return
+            hideError('statusError')
+
+            const btn = document.getElementById('joinBtn')
+            btn.disabled = true
+            btn.textContent = 'Joining...'
+
+            try {
+                const airdrop = await joinAirdrop(
+                    currentAirdrop.id,
+                    context.towns.user.userId
+                )
+                currentAirdrop = airdrop
+                updateStatusUI(airdrop)
+            } catch (err) {
+                showError('statusError', err.message)
+            } finally {
+                btn.disabled = false
+                btn.textContent = 'Join Airdrop'
+            }
+        })
+
+        document.getElementById('launchBtn').addEventListener('click', async () => {
+            if (!currentAirdrop) return
+            hideError('statusError')
+
+            const btn = document.getElementById('launchBtn')
+            btn.disabled = true
+            btn.textContent = 'Distributing...'
+
+            try {
+                const airdrop = await launchAirdrop(currentAirdrop.id)
+                currentAirdrop = airdrop
+                updateStatusUI(airdrop)
+            } catch (err) {
+                showError('statusError', err.message)
+            } finally {
+                btn.disabled = false
+                btn.textContent = 'Distribute Now'
+            }
+        })
+
+        document.getElementById('newAirdropBtn').addEventListener('click', showCreateScreen)
+
+        document.getElementById('closeBtn').addEventListener('click', () => {
+            sdk.actions.close().catch(() => {})
+        })
+
+        // ---- Init ----
+        async function init() {
+            try {
+                await initSDK()
+
+                // Show app
+                document.getElementById('loading').style.display = 'none'
+                document.getElementById('app').style.display = 'block'
+
+                // Display user info
+                document.getElementById('playerName').textContent =
+                    context.user?.displayName || 'Player'
+                document.getElementById('userId').textContent =
+                    context.towns.user.userId
+
+                // Enable create button
+                document.getElementById('createBtn').disabled = false
+
+                // Fetch holder info
+                const holders = await fetchHolders()
+                document.getElementById('holderCount').textContent = holders.count || '0'
+                document.getElementById('botAddress').textContent =
+                    holders.botAddress ? holders.botAddress.slice(0, 8) + '...' + holders.botAddress.slice(-6) : '...'
+
+            } catch (error) {
+                console.error('Init failed:', error)
+                document.getElementById('loading').innerHTML =
+                    '<div class="error">Failed to initialize. Make sure you are in a Towns channel.</div>'
+            }
+        }
+
+        init()
+    </script>
+</body>
+</html>

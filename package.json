@@ -4,11 +4,9 @@
   "type": "module",
   "main": "src/index.ts",
   "scripts": {
-    "build": "cd miniapp && bun install && bun run build",
-    "build:check": "tsc --noEmit",
-    "clean": "rm -rf dist miniapp/dist",
+    "build": "tsc --noEmit",
+    "clean": "rm -rf dist",
     "dev": "bun run --watch src/index.ts",
-    "dev:miniapp": "cd miniapp && bun run dev",
     "lint": "eslint --format unix ./src --max-warnings=0",
     "lint:fix": "eslint --format unix ./src --max-warnings=0 --fix",
     "start": "bun run src/index.ts",
@@ -16,7 +14,6 @@
   },
   "dependencies": {
     "@connectrpc/connect-node": "^2.1.0",
-    "@noble/hashes": "^2.0.1",
     "@towns-protocol/bot": "^1.0.3",
     "@towns-protocol/proto": "^1.0.3",
     "@towns-protocol/web3": "^1.0.3",
@@ -34,11 +31,7 @@
     "eslint-plugin-tsdoc": "^0.3.0",
     "typescript": "~5.8.3"
   },
-  "overrides": {
-    "@noble/hashes": "^2.0.0"
-  },
   "files": [
-    "/dist",
-    "/miniapp/dist"
+    "/dist"
   ]
 }
