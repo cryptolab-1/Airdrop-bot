@@ -6,7 +6,12 @@
     <title>$TOWNS Airdrop</title>
 
     <!-- Farcaster Mini App embed metadata (type MUST be launch_miniapp for Towns) -->
-    <meta name="fc:miniapp" content='{"version":"1","imageUrl":"https://airdrop-bot-tvql.onrender.com/image.png","button":{"title":"Launch Airdrop","action":{"type":"launch_miniapp","name":"$TOWNS Airdrop","url":"https://airdrop-bot-tvql.onrender.com/miniapp.html","splashBackgroundColor":"#7C3AED"}}}' />
+    <meta name="fc:miniapp" content='{"version":"1","imageUrl":"https://airdrop-bot-tvql.onrender.com/image.png","button":{"title":"Launch Airdrop","action":{"type":"launch_miniapp","name":"$TOWNS Airdrop","url":"https://airdrop-bot-tvql.onrender.com","splashBackgroundColor":"#7C3AED"}}}' />
+
+    <!-- OpenGraph tags for embed previews -->
+    <meta property="og:title" content="$TOWNS Airdrop" />
+    <meta property="og:description" content="Distribute $TOWNS tokens to NFT holders" />
+    <meta property="og:image" content="https://airdrop-bot-tvql.onrender.com/image.png" />
 
     <style>
         * {
@@ -396,31 +401,25 @@
     <script type="module">
         import { sdk } from 'https://esm.sh/@farcaster/miniapp-sdk@0.2.1'
 
+        // Call ready() IMMEDIATELY on load (before anything else)
+        // This dismisses the splash screen and tells the host we're alive
+        sdk.actions.ready().catch(() => {})
+
         // ---- State ----
         let context = null
         let currentAirdrop = null
         let pollInterval = null
 
-        // ---- SDK Init (same pattern as reflex-game) ----
+        // ---- SDK Init ----
         async function initSDK() {
             try {
-                // Step 1: Call ready() with timeout
-                try {
-                    await Promise.race([
-                        sdk.actions.ready(),
-                        new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 8000))
-                    ])
-                } catch (e) {
-                    console.warn('ready() timed out, continuing...', e)
-                }
-
-                // Step 2: Get context
+                // Get context with timeout
                 context = await Promise.race([
                     sdk.context,
                     new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 10000))
                 ])
 
-                // Step 3: Validate
+                // Validate
                 if (!context?.towns?.user?.userId) {
                     throw new Error('Missing Towns user data')
                 }

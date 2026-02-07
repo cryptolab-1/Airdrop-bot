@@ -425,8 +425,9 @@ bot.onSlashCommand('drop', async (handler, event) => {
 
 const app = bot.start()
 
-// Serve miniapp HTML (same pattern as reflex-game example)
-app.get('/miniapp.html', (c) => {
+// Serve miniapp HTML at both / and /miniapp.html
+// Farcaster embed preview fetches meta tags from homeUrl (typically the root)
+function serveMiniapp(c: any) {
     try {
         const htmlPath = join(__dirname, '..', 'public', 'miniapp.html')
         const html = readFileSync(htmlPath, 'utf-8')
@@ -435,7 +436,10 @@ app.get('/miniapp.html', (c) => {
         console.error('Failed to serve miniapp:', error)
         return c.text('Miniapp not found', 404)
     }
-})
+}
+
+app.get('/', (c) => serveMiniapp(c))
+app.get('/miniapp.html', (c) => serveMiniapp(c))
 
 // Serve image
 app.get('/image.png', (c) => {
