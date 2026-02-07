@@ -49,25 +49,49 @@ bot.onSlashCommand('help', async (handler, { channelId }) => {
 })
 
 bot.onSlashCommand('drop', async (handler, event) => {
-    const { channelId, isDm } = event
+    const { channelId, userId, isDm } = event
     
     if (isDm) {
         await handler.sendMessage(channelId, 'Use `/drop` in a space channel.')
         return
     }
 
+    // Send a message with a button to open the mini app
     await handler.sendMessage(
         channelId,
-        'Join Airdrop App',
-        {
-            attachments: [
-                {
-                    type: 'miniapp',
-                    url: MINIAPP_URL,
-                },
-            ],
-        },
+        '**$TOWNS Airdrop** - Create and distribute token airdrops to NFT holders',
     )
+    await handler.sendInteractionRequest(channelId, {
+        type: 'form',
+        id: 'open-airdrop-app',
+        components: [
+            { id: 'launch', type: 'button', label: '💸 Launch Airdrop App' },
+        ],
+    })
+})
+
+bot.onInteractionResponse(async (handler, event) => {
+    if (event.response.payload.content?.case !== 'form') return
+
+    const form = event.response.payload.content.value
+    if (form.requestId !== 'open-airdrop-app') return
+
+    for (const c of form.components) {
+        if (c.component.case === 'button' && c.id === 'launch') {
+            await handler.sendMessage(
+                event.channelId,
+                MINIAPP_URL,
+                {
+                    attachments: [
+                        {
+                            type: 'miniapp',
+                            url: MINIAPP_URL,
+                        },
+                    ],
+                },
+            )
+        }
+    }
 })
 
 // ============================================================================
