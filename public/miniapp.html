@@ -442,6 +442,10 @@
                 <div id="customCurrencyGroup" class="form-group hidden">
                     <label>Token Contract Address (Base)</label>
                     <input type="text" id="customCurrencyInput" placeholder="0x... (ERC20 on Base)" />
+                    <div class="hint">Paste the ERC20 token contract address on Base chain</div>
+                    <div id="tokenInfoLoading" class="hidden" style="margin-top:6px; font-size:12px; opacity:0.6;">
+                        <span class="spinner-sm" style="width:12px; height:12px; border-width:2px;"></span> Looking up token...
+                    </div>
                     <div id="tokenInfoDisplay" class="hidden" style="
                         margin-top:6px;
                         padding:8px 12px;
@@ -456,12 +460,8 @@
                         <span id="tokenInfoName" style="font-weight:600; color:#c4b5fd;"></span>
                         <span id="tokenInfoSymbol" style="color:#a78bfa;"></span>
                         <span id="tokenInfoAddr" style="font-family:'Monaco','Courier New',monospace; font-size:11px; opacity:0.5;"></span>
-                    </span></div>
-                    <div id="tokenInfoLoading" class="hidden" style="margin-top:6px; font-size:12px; opacity:0.6;">
-                        <span class="spinner-sm" style="width:12px; height:12px; border-width:2px;"></span> Looking up token...
                     </div>
                     <div id="tokenInfoError" class="hidden" style="margin-top:6px; font-size:12px; color:#fca5a5;"></div>
-                    <div class="hint">Paste the ERC20 token contract address on Base chain</div>
                 </div>
 
                 <div class="form-group">
@@ -502,6 +502,7 @@
         <!-- ===================== DEPOSIT SCREEN ===================== -->
         <div id="depositScreen" class="hidden">
             <div class="card">
+                <button class="back-btn" id="depositBackBtn">&larr; Back</button>
                 <h2>Deposit Tokens</h2>
 
                 <!-- Summary -->
@@ -772,30 +773,37 @@
             return raw // return raw as fallback
         }
 
-        function tokensToWei(tokens) {
+        function getActiveDecimals() {
+            const sel = document.getElementById('currencySelect').value
+            return sel === 'custom' ? resolvedTokenDecimals : 18
+        }
+
+        function tokensToWei(tokens, decimals) {
+            const d = decimals ?? getActiveDecimals()
             const s = tokens.trim()
             if (!s || isNaN(Number(s))) return null
             try {
                 const parts = s.split('.')
                 const whole = parts[0] || '0'
-                const frac = (parts[1] || '').padEnd(18, '0').slice(0, 18)
-                return (BigInt(whole) * 10n ** 18n + BigInt(frac)).toString()
+                const frac = (parts[1] || '').padEnd(d, '0').slice(0, d)
+                return (BigInt(whole) * 10n ** BigInt(d) + BigInt(frac)).toString()
             } catch { return null }
         }
 
-        function weiToTokens(wei) {
+        function weiToTokens(wei, decimals) {
+            const d = decimals ?? getActiveDecimals()
             try {
                 const n = BigInt(wei)
-                const whole = n / 10n ** 18n
-                const frac = n % 10n ** 18n
-                const fracStr = frac.toString().padStart(18, '0').replace(/0+$/, '')
+                const whole = n / 10n ** BigInt(d)
+                const frac = n % 10n ** BigInt(d)
+                const fracStr = frac.toString().padStart(d, '0').replace(/0+$/, '')
                 if (fracStr) return `${whole}.${fracStr}`
                 return `${whole}`
             } catch { return wei }
         }
 
-        function formatTokens(wei) {
-            const t = weiToTokens(wei)
+        function formatTokens(wei, decimals) {
+            const t = weiToTokens(wei, decimals)
             const num = Number(t)
             if (num >= 0.01) return num.toFixed(4).replace(/\.?0+$/, '')
             if (num > 0) return num.toFixed(8).replace(/\.?0+$/, '')
@@ -865,12 +873,12 @@
             return await res.json()
         }
 
-        async function apiCreateAirdrop(airdropType, totalAmountWei, creatorAddress, currency) {
+        async function apiCreateAirdrop(airdropType, totalAmountWei, creatorAddress, currency, decimals) {
             const spaceAddr = getSpaceAddress()
             const res = await fetch('/api/airdrop', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ airdropType, totalAmount: totalAmountWei, creatorAddress, currency, spaceId: spaceAddr })
+                body: JSON.stringify({ airdropType, totalAmount: totalAmountWei, creatorAddress, currency, spaceId: spaceAddr, currencyDecimals: decimals })
             })
             if (!res.ok) {
                 const err = await res.json().catch(() => ({}))
@@ -892,11 +900,14 @@
             return await res.json()
         }
 
-        async function apiJoinAirdrop(airdropId, userAddress) {
+        async function apiJoinAirdrop(airdropId) {
+            const userAddress = context?.towns?.user?.address || ''
+            const userId = context?.towns?.user?.userId || ''
+            const displayName = context?.user?.displayName || ''
             const res = await fetch(`/api/airdrop/${airdropId}/join`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ userAddress })
+                body: JSON.stringify({ userAddress, userId, displayName })
             })
             if (!res.ok) {
                 const err = await res.json().catch(() => ({}))
@@ -1024,7 +1035,13 @@
             // All retries failed
             holdersFetching = false
             document.getElementById('holderLoading').innerHTML =
-                '<span style="color:#fca5a5;">Failed to fetch holders after ' + maxRetries + ' attempts. <a href="#" onclick="holdersLoaded=false;holdersFetching=false;fetchHolders();return false" style="color:#93c5fd;">Retry</a></span>'
+                '<span style="color:#fca5a5;">Failed to fetch holders after ' + maxRetries + ' attempts. <a href="#" onclick="window.retryFetchHolders();return false" style="color:#93c5fd;">Retry</a></span>'
+        }
+
+        window.retryFetchHolders = function() {
+            holdersLoaded = false
+            holdersFetching = false
+            fetchHolders()
         }
 
         // Fetch bot treasury if not loaded yet (for public airdrops)
@@ -1054,6 +1071,7 @@
                 // Clear resolved token info when switching back to $TOWNS
                 resolvedTokenName = ''
                 resolvedTokenSymbol = ''
+                resolvedTokenDecimals = 18
                 document.getElementById('tokenInfoDisplay').classList.add('hidden')
                 document.getElementById('tokenInfoError').classList.add('hidden')
             }
@@ -1114,6 +1132,7 @@
 
         let resolvedTokenName = ''
         let resolvedTokenSymbol = ''
+        let resolvedTokenDecimals = 18
         let tokenLookupTimer = null
 
         document.getElementById('customCurrencyInput').addEventListener('input', () => {
@@ -1122,6 +1141,7 @@
             clearTimeout(tokenLookupTimer)
             resolvedTokenName = ''
             resolvedTokenSymbol = ''
+            resolvedTokenDecimals = 18
             document.getElementById('tokenInfoDisplay').classList.add('hidden')
             document.getElementById('tokenInfoError').classList.add('hidden')
             document.getElementById('tokenInfoLoading').classList.add('hidden')
@@ -1147,6 +1167,7 @@
                 }
                 resolvedTokenName = data.name || ''
                 resolvedTokenSymbol = data.symbol || ''
+                resolvedTokenDecimals = typeof data.decimals === 'number' ? data.decimals : 18
                 document.getElementById('tokenInfoName').textContent = resolvedTokenName
                 document.getElementById('tokenInfoSymbol').textContent = resolvedTokenSymbol ? `($${resolvedTokenSymbol})` : ''
                 document.getElementById('tokenInfoAddr').textContent = shortAddr(addr)
@@ -1162,6 +1183,11 @@
 
         document.getElementById('createBackBtn').addEventListener('click', () => {
             showScreen('homeScreen')
+        })
+
+        document.getElementById('depositBackBtn').addEventListener('click', () => {
+            stopDepositPolling()
+            showScreen('createScreen')
         })
 
         // Launch Airdrop → Create + go to deposit
@@ -1187,7 +1213,8 @@
                     type,
                     wei,
                     context.towns.user.userId,
-                    currency
+                    currency,
+                    getActiveDecimals()
                 )
                 currentAirdrop = airdrop
                 openDepositScreen(airdrop, amount)
@@ -1224,12 +1251,13 @@
                 humanAmount + ' ' + label
 
             // Tax breakdown
+            const dec = airdrop.currencyDecimals ?? getActiveDecimals()
             if (airdrop.taxPercent > 0 && airdrop.taxAmount !== '0') {
                 document.getElementById('depositTaxPercent').textContent = airdrop.taxPercent
                 document.getElementById('depositTaxAmount').textContent =
-                    formatTokens(airdrop.taxAmount) + ' ' + label
+                    formatTokens(airdrop.taxAmount, dec) + ' ' + label
                 document.getElementById('depositNetAmount').textContent =
-                    formatTokens(airdrop.netAmount) + ' ' + label
+                    formatTokens(airdrop.netAmount, dec) + ' ' + label
                 document.getElementById('depositTaxRow').classList.remove('hidden')
                 document.getElementById('depositNetRow').classList.remove('hidden')
             } else {
@@ -1424,11 +1452,11 @@
                     card.className = 'airdrop-card'
                     card.innerHTML = `
                         <div class="airdrop-card-header">
-                            <span class="airdrop-card-title">${formatTokens(drop.totalAmount)} tokens</span>
+                            <span class="airdrop-card-title">${formatTokens(drop.totalAmount, drop.currencyDecimals ?? 18)} tokens</span>
                             <span class="status-badge status-${drop.status}">${drop.status.toUpperCase()}</span>
                         </div>
                         <div class="airdrop-card-detail">${drop.recipientCount} participant${drop.recipientCount !== 1 ? 's' : ''}</div>
-                        <div class="airdrop-card-detail">Per person: ${drop.recipientCount > 0 ? formatTokens(drop.amountPerRecipient) : '—'} tokens</div>
+                        <div class="airdrop-card-detail">Per person: ${drop.recipientCount > 0 ? formatTokens(drop.amountPerRecipient, drop.currencyDecimals ?? 18) : '—'} tokens</div>
                         <div class="airdrop-card-detail" style="opacity:0.4;">Created by ${shortAddr(drop.creatorAddress)}</div>
                         <div class="airdrop-card-actions">
                             ${canJoin && !alreadyJoined ? `<button class="sm" onclick="joinPublicDrop('${drop.id}')">Join</button>` : ''}
@@ -1452,7 +1480,7 @@
         // Global handlers for inline onclick
         window.joinPublicDrop = async function(id) {
             try {
-                const updated = await apiJoinAirdrop(id, context.towns.user.address || context.towns.user.userId)
+                const updated = await apiJoinAirdrop(id)
                 currentAirdrop = updated
                 openStatusScreen(updated)
             } catch (err) {
@@ -1497,13 +1525,14 @@
 
             const typeLabel = airdrop.airdropType === 'space' ? 'Space Members' : 'Public'
             document.getElementById('statusType').textContent = typeLabel
-            document.getElementById('statusTotal').textContent = formatTokens(airdrop.totalAmount) + ' tokens'
+            const dec = airdrop.currencyDecimals ?? 18
+            document.getElementById('statusTotal').textContent = formatTokens(airdrop.totalAmount, dec) + ' tokens'
 
             // Tax info
             if (airdrop.taxPercent > 0 && airdrop.taxAmount && airdrop.taxAmount !== '0') {
                 document.getElementById('statusTaxPercent').textContent = airdrop.taxPercent
-                document.getElementById('statusTaxAmount').textContent = formatTokens(airdrop.taxAmount) + ' tokens'
-                document.getElementById('statusNetAmount').textContent = formatTokens(airdrop.netAmount) + ' tokens'
+                document.getElementById('statusTaxAmount').textContent = formatTokens(airdrop.taxAmount, dec) + ' tokens'
+                document.getElementById('statusNetAmount').textContent = formatTokens(airdrop.netAmount, dec) + ' tokens'
                 document.getElementById('statusTaxRow').classList.remove('hidden')
                 document.getElementById('statusNetRow').classList.remove('hidden')
             } else {
@@ -1512,7 +1541,7 @@
             }
 
             document.getElementById('statusPerRecipient').textContent =
-                airdrop.recipientCount > 0 ? formatTokens(airdrop.amountPerRecipient) + ' tokens' : '—'
+                airdrop.recipientCount > 0 ? formatTokens(airdrop.amountPerRecipient, dec) + ' tokens' : '—'
             document.getElementById('statusRecipientCount').textContent = airdrop.recipientCount
 
             const userId = context?.towns?.user?.userId?.toLowerCase() || ''
@@ -1533,9 +1562,13 @@
             if (isPublic && airdrop.participants?.length > 0) {
                 partSection.classList.remove('hidden')
                 const listEl = document.getElementById('statusParticipantsList')
-                listEl.innerHTML = airdrop.participants.map(p =>
-                    `<div class="participant">${p}</div>`
-                ).join('')
+                const names = airdrop.participantNames || {}
+                listEl.innerHTML = airdrop.participants.map(p => {
+                    const name = names[p]
+                    return name
+                        ? `<div class="participant"><strong>${name}</strong> <span style="opacity:0.5; font-size:11px;">${shortAddr(p)}</span></div>`
+                        : `<div class="participant">${shortAddr(p)}</div>`
+                }).join('')
             } else {
                 partSection.classList.add('hidden')
             }
@@ -1573,7 +1606,7 @@
             btn.disabled = true
             btn.textContent = 'Joining...'
             try {
-                const updated = await apiJoinAirdrop(currentAirdrop.id, context.towns.user.address || context.towns.user.userId)
+                const updated = await apiJoinAirdrop(currentAirdrop.id)
                 currentAirdrop = updated
                 updateStatusUI(updated)
             } catch (err) {

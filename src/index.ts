@@ -95,6 +95,7 @@ interface Airdrop {
     airdropType: 'space' | 'public'
     spaceNftAddress?: string // The space's membership NFT contract (= spaceId)
     currency: string // ERC20 token contract address
+    currencyDecimals: number // Token decimals (default 18)
     totalAmount: string // gross amount deposited
     taxPercent: number // e.g. 2 means 2%
     taxAmount: string // wei taken as tax
@@ -174,6 +175,7 @@ function airdropToResponse(a: Airdrop) {
         airdropType: a.airdropType,
         spaceNftAddress: a.spaceNftAddress || null,
         currency: a.currency,
+        currencyDecimals: a.currencyDecimals,
         totalAmount: a.totalAmount,
         taxPercent: a.taxPercent,
         taxAmount: a.taxAmount,
@@ -182,6 +184,9 @@ function airdropToResponse(a: Airdrop) {
         recipientCount: a.recipientCount,
         status: a.status,
         participants: a.participants,
+        participantNames: Object.fromEntries(
+            a.participants.map(p => [p, participantNames.get(p) || null])
+        ),
         taxHolderCount: a.taxHolders.length,
         txHash: a.distributionTxHash || a.depositTxHash,
         mode: a.airdropType === 'space' ? 'fixed' : 'react', // backward compat
@@ -866,11 +871,28 @@ refreshTaxHolderCount()
 setInterval(refreshTaxHolderCount, 5 * 60 * 1000)
 
 // Token info lookup (name, symbol, decimals)
+// Some tokens (like cbBTC) use bytes32 for name/symbol, so we try both ABIs
 const ERC20_META_ABI = parseAbi([
     'function name() view returns (string)',
     'function symbol() view returns (string)',
     'function decimals() view returns (uint8)',
 ])
+const ERC20_META_BYTES32_ABI = parseAbi([
+    'function name() view returns (bytes32)',
+    'function symbol() view returns (bytes32)',
+])
+
+function bytes32ToString(hex: string): string {
+    // Convert a bytes32 hex to a UTF-8 string, stripping null bytes
+    const clean = hex.startsWith('0x') ? hex.slice(2) : hex
+    let result = ''
+    for (let i = 0; i < clean.length; i += 2) {
+        const byte = parseInt(clean.slice(i, i + 2), 16)
+        if (byte === 0) break
+        result += String.fromCharCode(byte)
+    }
+    return result
+}
 
 app.get('/api/token-info', async (c) => {
     const address = (c.req.query('address') ?? '').trim()
@@ -878,22 +900,35 @@ app.get('/api/token-info', async (c) => {
         return c.json({ error: 'Invalid address' }, 400)
     }
     try {
+        // Try string ABI first, then bytes32 fallback
         const results = await multicall(bot.viem, {
             contracts: [
                 { address: address as Address, abi: ERC20_META_ABI, functionName: 'name' },
                 { address: address as Address, abi: ERC20_META_ABI, functionName: 'symbol' },
                 { address: address as Address, abi: ERC20_META_ABI, functionName: 'decimals' },
+                { address: address as Address, abi: ERC20_META_BYTES32_ABI, functionName: 'name' },
+                { address: address as Address, abi: ERC20_META_BYTES32_ABI, functionName: 'symbol' },
             ],
             allowFailure: true,
         })
-        const name = results[0].status === 'success' ? results[0].result : null
-        const symbol = results[1].status === 'success' ? results[1].result : null
-        const decimals = results[2].status === 'success' ? Number(results[2].result) : null
+        let name = results[0].status === 'success' ? (results[0].result as string) : null
+        let symbol = results[1].status === 'success' ? (results[1].result as string) : null
+        const decimals = results[2].status === 'success' ? Number(results[2].result) : 18
+
+        // Fallback to bytes32 if string failed
+        if (!name && results[3].status === 'success') {
+            name = bytes32ToString(results[3].result as string)
+        }
+        if (!symbol && results[4].status === 'success') {
+            symbol = bytes32ToString(results[4].result as string)
+        }
+
         if (!name && !symbol) {
             return c.json({ error: 'Not a valid ERC20 token' }, 400)
         }
         return c.json({ name, symbol, decimals, address })
     } catch (err) {
+        console.error('[TokenInfo] Error:', err)
         return c.json({ error: 'Failed to read token contract' }, 500)
     }
 })
@@ -981,7 +1016,7 @@ app.get('/api/holders', async (c) => {
 app.post('/api/airdrop', async (c) => {
     try {
         const body = await c.req.json()
-        const { airdropType, totalAmount, creatorAddress, currency, spaceId } = body
+        const { airdropType, totalAmount, creatorAddress, currency, spaceId, currencyDecimals: rawDecimals } = body
 
         if (!airdropType || !totalAmount || !creatorAddress) {
             return c.json({ error: 'Missing required fields' }, 400)
@@ -1081,6 +1116,7 @@ app.post('/api/airdrop', async (c) => {
             airdropType,
             spaceNftAddress,
             currency: tokenAddress,
+            currencyDecimals: typeof rawDecimals === 'number' ? rawDecimals : 18,
             totalAmount,
             taxPercent: AIRDROP_TAX_PERCENT,
             taxAmount: taxAmount.toString(),
@@ -1146,6 +1182,14 @@ app.post('/api/airdrop/:id/request-deposit', async (c) => {
             ? '$TOWNS'
             : tokenAddress.slice(0, 8) + '...'
 
+        // Format amount using the token's actual decimals
+        const decimals = airdrop.currencyDecimals || 18
+        const divisor = 10n ** BigInt(decimals)
+        const whole = totalAmount / divisor
+        const frac = totalAmount % divisor
+        const fracStr = frac > 0n ? '.' + frac.toString().padStart(decimals, '0').replace(/0+$/, '') : ''
+        const humanAmount = `${whole}${fracStr}`
+
         const requestId = `deposit-${airdrop.id}`
 
         // Send transaction interaction request to the user in the channel
@@ -1155,7 +1199,7 @@ app.post('/api/airdrop/:id/request-deposit', async (c) => {
             type: 'transaction',
             id: requestId,
             title: 'Airdrop Deposit',
-            subtitle: `Send ${formatEther(totalAmount)} ${tokenLabel}`,
+            subtitle: `Send ${humanAmount} ${tokenLabel}`,
             tx: {
                 chainId: '8453',
                 to: tokenAddress,
@@ -1213,6 +1257,9 @@ app.post('/api/airdrop/:id/confirm-deposit', async (c) => {
 })
 
 // Join airdrop (public only)
+// Stores mapping of wallet → display name for UI
+const participantNames = new Map<string, string>() // walletAddress → displayName
+
 app.post('/api/airdrop/:id/join', async (c) => {
     const airdrop = airdrops.get(c.req.param('id'))
     if (!airdrop) {
@@ -1229,14 +1276,34 @@ app.post('/api/airdrop/:id/join', async (c) => {
 
     try {
         const body = await c.req.json()
-        const { userAddress } = body
+        const { userAddress, userId, displayName } = body
 
-        if (!userAddress || !isEthAddress(userAddress)) {
-            return c.json({ error: 'Invalid user address' }, 400)
+        // Accept either the smart wallet address directly or resolve from userId
+        let walletAddress = ''
+
+        if (userAddress && isEthAddress(userAddress)) {
+            walletAddress = userAddress.toLowerCase()
+        } else if (userId && isEthAddress(userId)) {
+            // Resolve userId to smart wallet address
+            try {
+                const smartAccount = await getSmartAccountFromUserId(bot as AnyBot, { userId })
+                walletAddress = (smartAccount as string).toLowerCase()
+                console.log(`[Join] Resolved userId ${userId} to wallet ${walletAddress}`)
+            } catch (err) {
+                console.error(`[Join] Failed to resolve userId ${userId}:`, err)
+                return c.json({ error: 'Failed to resolve wallet address' }, 500)
+            }
+        } else {
+            return c.json({ error: 'Missing userAddress or userId' }, 400)
         }
 
-        if (!airdrop.participants.includes(userAddress.toLowerCase())) {
-            airdrop.participants.push(userAddress.toLowerCase())
+        // Store display name
+        if (displayName) {
+            participantNames.set(walletAddress, displayName)
+        }
+
+        if (!airdrop.participants.includes(walletAddress)) {
+            airdrop.participants.push(walletAddress)
             airdrop.recipientCount = airdrop.participants.length
 
             // Recalculate per-recipient using net amount (after tax)
