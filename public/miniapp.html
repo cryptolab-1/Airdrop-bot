@@ -940,50 +940,82 @@
             validateCreateForm()
         }
 
+        let holdersFetching = false // guard against concurrent calls
+
         async function fetchHolders() {
+            if (holdersFetching) return // already in progress
+            holdersFetching = true
+
             document.getElementById('holderLoading').classList.remove('hidden')
+            document.getElementById('holderLoading').innerHTML =
+                '<span class="spinner-sm"></span> Fetching NFT Holders...'
             document.getElementById('holderResult').classList.add('hidden')
-            try {
-                const data = await apiFetchHolders()
-                holderCount = data.count || 0
-                taxHolderCount = data.taxHolderCount || 0
-                botTreasuryAddress = data.botAddress || ''
 
-                // Show the NFT contract address
-                const nftAddr = data.nftAddress || context?.towns?.spaceId || ''
-                if (nftAddr) {
-                    document.getElementById('holderNftAddress').textContent =
-                        nftAddr.slice(0, 6) + '...' + nftAddr.slice(-4)
-                    document.getElementById('holderNftAddress').title = nftAddr
-                    document.getElementById('holderNftRow').classList.remove('hidden')
-                } else {
-                    document.getElementById('holderNftRow').classList.add('hidden')
+            const maxRetries = 3
+            let lastError = null
+
+            for (let attempt = 1; attempt <= maxRetries; attempt++) {
+                try {
+                    if (attempt > 1) {
+                        document.getElementById('holderLoading').innerHTML =
+                            `<span class="spinner-sm"></span> Fetching NFT Holders... (retry ${attempt}/${maxRetries})`
+                    }
+                    const data = await apiFetchHolders()
+                    holderCount = data.count || 0
+                    taxHolderCount = data.taxHolderCount || 0
+                    botTreasuryAddress = data.botAddress || ''
+
+                    // Show the NFT contract address
+                    const nftAddr = data.nftAddress || getSpaceAddress() || ''
+                    if (nftAddr) {
+                        document.getElementById('holderNftAddress').textContent =
+                            nftAddr.slice(0, 6) + '...' + nftAddr.slice(-4)
+                        document.getElementById('holderNftAddress').title = nftAddr
+                        document.getElementById('holderNftRow').classList.remove('hidden')
+                    } else {
+                        document.getElementById('holderNftRow').classList.add('hidden')
+                    }
+
+                    document.getElementById('holderCount').textContent = holderCount
+
+                    // Update tax member count
+                    if (taxHolderCount > 0) {
+                        document.getElementById('taxMemberCount').textContent = taxHolderCount
+                    }
+
+                    document.getElementById('holderLoading').classList.add('hidden')
+                    document.getElementById('holderResult').classList.remove('hidden')
+                    holdersLoaded = true
+                    holdersFetching = false
+                    updatePerPerson()
+                    validateCreateForm()
+                    return // success
+                } catch (err) {
+                    lastError = err
+                    console.warn(`[Holders] Attempt ${attempt}/${maxRetries} failed:`, err.message)
+                    if (attempt < maxRetries) {
+                        // Wait 2s before retry
+                        await new Promise(r => setTimeout(r, 2000))
+                    }
                 }
-
-                document.getElementById('holderCount').textContent = holderCount
-
-                // Update tax member count
-                if (taxHolderCount > 0) {
-                    document.getElementById('taxMemberCount').textContent = taxHolderCount
-                }
-
-                document.getElementById('holderLoading').classList.add('hidden')
-                document.getElementById('holderResult').classList.remove('hidden')
-                holdersLoaded = true
-                updatePerPerson()
-                validateCreateForm()
-            } catch (err) {
-                document.getElementById('holderLoading').innerHTML =
-                    '<span style="color:#fca5a5;">Failed to fetch holders. Check NFT config.</span>'
             }
+
+            // All retries failed
+            holdersFetching = false
+            document.getElementById('holderLoading').innerHTML =
+                '<span style="color:#fca5a5;">Failed to fetch holders after ' + maxRetries + ' attempts. <a href="#" onclick="holdersLoaded=false;holdersFetching=false;fetchHolders();return false" style="color:#93c5fd;">Retry</a></span>'
         }
 
         // Fetch bot treasury if not loaded yet (for public airdrops)
         async function ensureTreasuryAddress() {
             if (botTreasuryAddress) return
             try {
-                const data = await apiFetchHolders()
-                botTreasuryAddress = data.botAddress || ''
+                // Use config endpoint (fast) instead of holders endpoint (slow)
+                const res = await fetch('/api/config')
+                if (res.ok) {
+                    const data = await res.json()
+                    botTreasuryAddress = data.botAddress || ''
+                }
             } catch { /* ignore */ }
         }
 
