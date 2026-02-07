@@ -410,7 +410,7 @@ bot.onSlashCommand('drop', async (handler, event) => {
         return
     }
 
-    await handler.sendMessage(channelId, 'Click below to open the airdrop app:', {
+    await handler.sendMessage(channelId, 'Launch Airdrop App', {
         attachments: [
             {
                 type: 'miniapp',
@@ -591,22 +591,55 @@ function createPng(width: number, height: number, r: number, g: number, b: numbe
     return png
 }
 
-// Pre-generate images at startup (purple #7C3AED = rgb(124, 58, 237))
-const ICON_PNG = createPng(512, 512, 124, 58, 237)
-const IMAGE_PNG = createPng(1200, 630, 124, 58, 237)
-const SPLASH_PNG = createPng(200, 200, 124, 58, 237)
+// Pre-generate fallback images at startup (purple #7C3AED = rgb(124, 58, 237))
+const FALLBACK_ICON = createPng(512, 512, 124, 58, 237)
+const FALLBACK_IMAGE = createPng(1200, 630, 124, 58, 237)
+const FALLBACK_SPLASH = createPng(200, 200, 124, 58, 237)
 
-// Serve images
-function servePng(c: any, png: Uint8Array) {
-    c.header('Content-Type', 'image/png')
-    c.header('Content-Length', png.length.toString())
-    c.header('Cache-Control', 'public, max-age=86400')
-    return c.body(png)
+// Fetch profile image from river.delivery and cache it
+const RIVER_IMAGE_URL = 'https://river.delivery/user/0xCC8ae8246f6FF472e7CDBa4aA973c2A91ba0C97c/image'
+let cachedProfileImage: { data: Uint8Array; contentType: string } | null = null
+
+async function fetchProfileImage() {
+    try {
+        const res = await fetch(RIVER_IMAGE_URL)
+        if (res.ok) {
+            const buf = await res.arrayBuffer()
+            const contentType = res.headers.get('content-type') || 'image/jpeg'
+            cachedProfileImage = { data: new Uint8Array(buf), contentType }
+            console.log(`[Image] Cached profile image (${cachedProfileImage.data.length} bytes, ${contentType})`)
+        } else {
+            console.warn(`[Image] Failed to fetch profile image: ${res.status}`)
+        }
+    } catch (err) {
+        console.warn('[Image] Error fetching profile image:', err)
+    }
 }
 
-app.get('/icon.png', (c) => servePng(c, ICON_PNG))
-app.get('/image.png', (c) => servePng(c, IMAGE_PNG))
-app.get('/splash.png', (c) => servePng(c, SPLASH_PNG))
+await fetchProfileImage()
+// Refresh the image periodically (every hour)
+setInterval(fetchProfileImage, 60 * 60 * 1000)
+
+// Serve images
+function serveImage(c: any, data: Uint8Array, contentType: string) {
+    c.header('Content-Type', contentType)
+    c.header('Content-Length', data.length.toString())
+    c.header('Cache-Control', 'public, max-age=86400')
+    return c.body(data)
+}
+
+app.get('/icon.png', (c) => {
+    if (cachedProfileImage) return serveImage(c, cachedProfileImage.data, cachedProfileImage.contentType)
+    return serveImage(c, FALLBACK_ICON, 'image/png')
+})
+app.get('/image.png', (c) => {
+    if (cachedProfileImage) return serveImage(c, cachedProfileImage.data, cachedProfileImage.contentType)
+    return serveImage(c, FALLBACK_IMAGE, 'image/png')
+})
+app.get('/splash.png', (c) => {
+    if (cachedProfileImage) return serveImage(c, cachedProfileImage.data, cachedProfileImage.contentType)
+    return serveImage(c, FALLBACK_SPLASH, 'image/png')
+})
 
 // Agent metadata
 app.get('/.well-known/agent-metadata.json', async (c) => {
