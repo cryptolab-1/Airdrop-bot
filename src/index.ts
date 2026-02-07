@@ -57,18 +57,12 @@ bot.onSlashCommand('drop', async (handler, event) => {
         return
     }
 
-    await handler.sendMessage(
-        channelId,
-        MINIAPP_URL,
-        {
-            attachments: [
-                {
-                    type: 'miniapp',
-                    url: MINIAPP_URL,
-                },
-            ],
-        },
-    )
+    await bot.sendMessage(channelId, 'Check out this Mini App!', {
+        attachments: [{
+            type: 'miniapp',
+            url: MINIAPP_URL,
+        }],
+    })
 })
 
 // ============================================================================
