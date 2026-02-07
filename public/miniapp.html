@@ -902,12 +902,12 @@
 
         async function apiJoinAirdrop(airdropId) {
             const userAddress = context?.towns?.user?.address || ''
-            const userId = context?.towns?.user?.userId || ''
             const displayName = context?.user?.displayName || ''
+            if (!userAddress) throw new Error('Wallet address not available')
             const res = await fetch(`/api/airdrop/${airdropId}/join`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ userAddress, userId, displayName })
+                body: JSON.stringify({ userAddress, displayName })
             })
             if (!res.ok) {
                 const err = await res.json().catch(() => ({}))
@@ -1072,6 +1072,7 @@
                 resolvedTokenName = ''
                 resolvedTokenSymbol = ''
                 resolvedTokenDecimals = 18
+                tokenLookupSuccess = false
                 document.getElementById('tokenInfoDisplay').classList.add('hidden')
                 document.getElementById('tokenInfoError').classList.add('hidden')
             }
@@ -1125,6 +1126,8 @@
             if (document.getElementById('currencySelect').value === 'custom') {
                 const addr = document.getElementById('customCurrencyInput').value.trim()
                 if (!/^0x[a-fA-F0-9]{40}$/.test(addr)) valid = false
+                // Must have a successful token lookup to ensure correct decimals
+                if (!tokenLookupSuccess) valid = false
             }
 
             document.getElementById('launchAirdropBtn').disabled = !valid
@@ -1133,6 +1136,7 @@
         let resolvedTokenName = ''
         let resolvedTokenSymbol = ''
         let resolvedTokenDecimals = 18
+        let tokenLookupSuccess = false
         let tokenLookupTimer = null
 
         document.getElementById('customCurrencyInput').addEventListener('input', () => {
@@ -1142,6 +1146,7 @@
             resolvedTokenName = ''
             resolvedTokenSymbol = ''
             resolvedTokenDecimals = 18
+            tokenLookupSuccess = false
             document.getElementById('tokenInfoDisplay').classList.add('hidden')
             document.getElementById('tokenInfoError').classList.add('hidden')
             document.getElementById('tokenInfoLoading').classList.add('hidden')
@@ -1153,31 +1158,47 @@
         })
 
         async function lookupToken(addr) {
+            tokenLookupSuccess = false
             document.getElementById('tokenInfoLoading').classList.remove('hidden')
             document.getElementById('tokenInfoError').classList.add('hidden')
             document.getElementById('tokenInfoDisplay').classList.add('hidden')
+            validateCreateForm()
             try {
                 const res = await fetch(`/api/token-info?address=${encodeURIComponent(addr)}`)
                 const data = await res.json()
                 document.getElementById('tokenInfoLoading').classList.add('hidden')
                 if (!res.ok || data.error) {
-                    document.getElementById('tokenInfoError').textContent = data.error || 'Not a valid ERC20 token'
+                    const errMsg = data.error || 'Not a valid ERC20 token'
+                    document.getElementById('tokenInfoError').innerHTML =
+                        errMsg + ' <a href="#" onclick="window.retryTokenLookup();return false" style="color:#93c5fd;">Retry</a>'
                     document.getElementById('tokenInfoError').classList.remove('hidden')
+                    validateCreateForm()
                     return
                 }
                 resolvedTokenName = data.name || ''
                 resolvedTokenSymbol = data.symbol || ''
                 resolvedTokenDecimals = typeof data.decimals === 'number' ? data.decimals : 18
+                tokenLookupSuccess = true
                 document.getElementById('tokenInfoName').textContent = resolvedTokenName
                 document.getElementById('tokenInfoSymbol').textContent = resolvedTokenSymbol ? `($${resolvedTokenSymbol})` : ''
                 document.getElementById('tokenInfoAddr').textContent = shortAddr(addr)
                 document.getElementById('tokenInfoDisplay').classList.remove('hidden')
                 // Refresh labels that use token name
                 updatePerPerson()
+                validateCreateForm()
             } catch {
                 document.getElementById('tokenInfoLoading').classList.add('hidden')
-                document.getElementById('tokenInfoError').textContent = 'Failed to look up token'
+                document.getElementById('tokenInfoError').innerHTML =
+                    'Failed to look up token. <a href="#" onclick="window.retryTokenLookup();return false" style="color:#93c5fd;">Retry</a>'
                 document.getElementById('tokenInfoError').classList.remove('hidden')
+                validateCreateForm()
+            }
+        }
+
+        window.retryTokenLookup = function() {
+            const addr = document.getElementById('customCurrencyInput').value.trim()
+            if (/^0x[a-fA-F0-9]{40}$/.test(addr)) {
+                lookupToken(addr)
             }
         }
 

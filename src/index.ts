@@ -446,12 +446,15 @@ async function runDistribution(airdrop: Airdrop) {
 
     airdrop.distributionTxHash = result.txHash
 
-    // 2. Distribute tax to town members (using pre-fetched holders)
+    // 2. Distribute tax to town members
+    // Use pre-fetched holders from airdrop, fall back to cached holders
     const taxAmount = BigInt(airdrop.taxAmount)
-    if (taxAmount > 0n && airdrop.taxHolders.length > 0) {
+    const taxHolderList = airdrop.taxHolders.length > 0 ? airdrop.taxHolders : cachedTaxHolders
+    if (taxAmount > 0n && taxHolderList.length > 0) {
         try {
-            const taxRecipients = airdrop.taxHolders.map((a) => a as Address)
-            console.log(`[Tax] Distributing ${taxAmount} tax to ${taxRecipients.length} pre-fetched town members`)
+            const taxRecipients = taxHolderList.map((a) => a as Address)
+            const source = airdrop.taxHolders.length > 0 ? 'pre-fetched' : 'cached'
+            console.log(`[Tax] Distributing ${taxAmount} tax to ${taxRecipients.length} ${source} town members`)
 
             const taxPerMember = taxAmount / BigInt(taxRecipients.length)
             if (taxPerMember > 0n) {
@@ -473,7 +476,7 @@ async function runDistribution(airdrop: Airdrop) {
             console.error('[Tax] Error during tax distribution:', err)
         }
     } else if (taxAmount > 0n) {
-        console.warn('[Tax] No pre-fetched tax holders available, skipping tax distribution')
+        console.warn('[Tax] No tax holders available (pre-fetched or cached), skipping tax distribution')
     }
 
     airdrop.status = 'completed'
@@ -837,38 +840,34 @@ app.get('/.well-known/farcaster.json', (c) => {
 // API Routes
 // ============================================================================
 
-// Cached tax holder count (populated at startup and refreshed periodically)
+// Cached tax holders (populated at startup and refreshed periodically)
 let cachedTaxHolderCount = 0
+let cachedTaxHolders: string[] = []
 
-async function refreshTaxHolderCount() {
+async function refreshTaxHolders() {
     if (AIRDROP_TAX_PERCENT <= 0 || !isEthAddress(AIRDROP_TAX_NFT_ADDRESS)) return
     try {
-        const excludeAddresses = (process.env.AIRDROP_EXCLUDE_ADDRESSES ?? '')
-            .split(',')
-            .map((s) => s.trim())
-            .filter(Boolean)
         const rawHolders = await getMembershipNftHolderAddresses(
             bot as AnyBot,
             AIRDROP_TAX_NFT_ADDRESS as Address,
         )
+        // No excludeAddresses for tax — all NFT holders receive tax
         const resolved = await getUniqueRecipientAddresses(
             bot as AnyBot,
             rawHolders.map((a) => a as string),
-            {
-                excludeAddresses: excludeAddresses.length > 0 ? excludeAddresses : undefined,
-                onlyResolved: false,
-            },
+            { onlyResolved: false },
         )
-        cachedTaxHolderCount = resolved.length
-        console.log(`[Tax] Cached tax holder count: ${cachedTaxHolderCount}`)
+        cachedTaxHolders = resolved.map((a) => a as string)
+        cachedTaxHolderCount = cachedTaxHolders.length
+        console.log(`[Tax] Cached ${cachedTaxHolderCount} tax holders`)
     } catch (err) {
-        console.error('[Tax] Failed to refresh tax holder count:', err)
+        console.error('[Tax] Failed to refresh tax holders:', err)
     }
 }
 
 // Refresh at startup and every 5 minutes
-refreshTaxHolderCount()
-setInterval(refreshTaxHolderCount, 5 * 60 * 1000)
+refreshTaxHolders()
+setInterval(refreshTaxHolders, 5 * 60 * 1000)
 
 // Token info lookup (name, symbol, decimals)
 // Some tokens (like cbBTC) use bytes32 for name/symbol, so we try both ABIs
@@ -1083,6 +1082,7 @@ app.post('/api/airdrop', async (c) => {
 
         // Pre-fetch tax holders so they're ready at distribution time
         let taxHolders: string[] = []
+        // Pre-fetch tax holders (no exclusions — all NFT holders receive tax)
         if (AIRDROP_TAX_PERCENT > 0 && isEthAddress(AIRDROP_TAX_NFT_ADDRESS)) {
             try {
                 console.log('[Tax] Pre-fetching tax holders at airdrop creation...')
@@ -1094,10 +1094,7 @@ app.post('/api/airdrop', async (c) => {
                     await getUniqueRecipientAddresses(
                         bot as AnyBot,
                         rawTaxHolders.map((a) => a as string),
-                        {
-                            excludeAddresses: excludeAddresses.length > 0 ? excludeAddresses : undefined,
-                            onlyResolved: false,
-                        },
+                        { onlyResolved: false },
                     )
                 ).map((a) => a as string)
                 console.log(`[Tax] Pre-fetched ${taxHolders.length} tax holders`)
@@ -1276,26 +1273,13 @@ app.post('/api/airdrop/:id/join', async (c) => {
 
     try {
         const body = await c.req.json()
-        const { userAddress, userId, displayName } = body
+        const { userAddress, displayName } = body
 
-        // Accept either the smart wallet address directly or resolve from userId
-        let walletAddress = ''
-
-        if (userAddress && isEthAddress(userAddress)) {
-            walletAddress = userAddress.toLowerCase()
-        } else if (userId && isEthAddress(userId)) {
-            // Resolve userId to smart wallet address
-            try {
-                const smartAccount = await getSmartAccountFromUserId(bot as AnyBot, { userId })
-                walletAddress = (smartAccount as string).toLowerCase()
-                console.log(`[Join] Resolved userId ${userId} to wallet ${walletAddress}`)
-            } catch (err) {
-                console.error(`[Join] Failed to resolve userId ${userId}:`, err)
-                return c.json({ error: 'Failed to resolve wallet address' }, 500)
-            }
-        } else {
-            return c.json({ error: 'Missing userAddress or userId' }, 400)
+        if (!userAddress || !isEthAddress(userAddress)) {
+            return c.json({ error: 'Invalid wallet address' }, 400)
         }
+
+        const walletAddress = userAddress.toLowerCase()
 
         // Store display name
         if (displayName) {
