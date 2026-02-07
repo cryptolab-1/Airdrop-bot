@@ -12,7 +12,7 @@
 
 import { makeTownsBot, getSmartAccountFromUserId } from '@towns-protocol/bot'
 import type { Bot, BotCommand } from '@towns-protocol/bot'
-import { erc20Abi } from 'viem'
+import { erc20Abi, encodeFunctionData } from 'viem'
 import type { Address } from 'viem'
 import { readContract, waitForTransactionReceipt, multicall } from 'viem/actions'
 import { execute as executeErc7821 } from 'viem/experimental/erc7821'
@@ -496,7 +496,7 @@ bot.onSlashCommand('drop', async (handler, event) => {
         return
     }
 
-    await handler.sendMessage(channelId, 'Launch Airdrop App', {
+    await handler.sendMessage(channelId, '', {
         attachments: [
             {
                 type: 'miniapp',
@@ -504,6 +504,87 @@ bot.onSlashCommand('drop', async (handler, event) => {
             },
         ],
     })
+})
+
+// ============================================================================
+// Interaction Response Handler (for deposit transactions)
+// ============================================================================
+
+bot.onInteractionResponse(async (handler, event) => {
+    try {
+        const content = (event.response as any)?.payload?.content
+
+        // Log for debugging
+        console.log('[InteractionResponse] Received:', JSON.stringify({
+            channelId: event.channelId,
+            userId: event.userId,
+            contentCase: content?.case,
+        }))
+
+        // Only handle transaction responses
+        if (content?.case !== 'transaction') return
+
+        const tx = content.value
+        const requestId: string | undefined = tx?.requestId || tx?.id
+        const txHash: string | undefined = tx?.txHash || tx?.transactionHash || tx?.hash
+
+        console.log('[InteractionResponse] Transaction: requestId=', requestId, 'txHash=', txHash, 'error=', tx?.error)
+
+        // Match deposit requests by their ID prefix "deposit-"
+        if (!requestId || !requestId.startsWith('deposit-')) return
+
+        if (tx?.error) {
+            console.warn('[InteractionResponse] Transaction rejected:', tx.error)
+            return
+        }
+
+        if (!txHash) {
+            console.warn('[InteractionResponse] No tx hash in response for', requestId)
+            return
+        }
+
+        const airdropId = requestId.replace('deposit-', '')
+        const airdrop = airdrops.get(airdropId)
+        if (!airdrop) {
+            console.warn('[InteractionResponse] Airdrop not found:', airdropId)
+            return
+        }
+
+        if (airdrop.status !== 'pending') {
+            console.log('[InteractionResponse] Airdrop already processed:', airdropId, airdrop.status)
+            return
+        }
+
+        // Verify the transaction on-chain
+        console.log('[InteractionResponse] Verifying tx on-chain:', txHash)
+        const receipt = await waitForTransactionReceipt(bot.viem, {
+            hash: txHash as `0x${string}`,
+        })
+
+        if (receipt.status !== 'success') {
+            console.error('[InteractionResponse] Transaction failed on-chain:', txHash)
+            await handler.sendMessage(event.channelId, 'Deposit transaction failed on-chain. Please try again.')
+            return
+        }
+
+        // Mark as funded
+        airdrop.depositTxHash = txHash
+        airdrop.status = 'funded'
+        airdrop.updatedAt = Date.now()
+        console.log('[InteractionResponse] Deposit confirmed for', airdropId)
+
+        // Space airdrops auto-distribute
+        if (airdrop.airdropType === 'space' && airdrop.participants.length > 0) {
+            airdrop.status = 'distributing'
+            airdrop.updatedAt = Date.now()
+            await handler.sendMessage(event.channelId, `Deposit confirmed! Distributing to ${airdrop.participants.length} recipients...`)
+            runDistribution(airdrop).catch(console.error)
+        } else if (airdrop.airdropType === 'public') {
+            await handler.sendMessage(event.channelId, 'Deposit confirmed! Your public airdrop is now live.')
+        }
+    } catch (err) {
+        console.error('[InteractionResponse] Error:', err)
+    }
 })
 
 // ============================================================================
@@ -883,7 +964,67 @@ app.get('/api/airdrop/:id', (c) => {
     return c.json(airdropToResponse(airdrop))
 })
 
-// Confirm deposit
+// Request deposit via Towns interaction (sends tx prompt to user in channel)
+app.post('/api/airdrop/:id/request-deposit', async (c) => {
+    const airdrop = airdrops.get(c.req.param('id'))
+    if (!airdrop) {
+        return c.json({ error: 'Airdrop not found' }, 404)
+    }
+
+    if (airdrop.status !== 'pending') {
+        return c.json({ error: 'Airdrop is not pending deposit' }, 400)
+    }
+
+    try {
+        const body = await c.req.json()
+        const { userId, channelId } = body
+
+        if (!userId || !channelId) {
+            return c.json({ error: 'Missing userId or channelId' }, 400)
+        }
+
+        const tokenAddress = (airdrop.currency || TOWNS_ADDRESS) as Address
+        const totalAmount = BigInt(airdrop.totalAmount)
+        const treasury = bot.appAddress as Address
+
+        // Encode the ERC20 transfer(treasury, amount) calldata
+        const data = encodeFunctionData({
+            abi: erc20Abi,
+            functionName: 'transfer',
+            args: [treasury, totalAmount],
+        })
+
+        const tokenLabel = tokenAddress.toLowerCase() === TOWNS_ADDRESS.toLowerCase()
+            ? '$TOWNS'
+            : tokenAddress.slice(0, 8) + '...'
+
+        const requestId = `deposit-${airdrop.id}`
+
+        // Send transaction interaction request to the user in the channel
+        // Uses the same pattern as the reflex-game example (handler.sendInteractionRequest)
+        console.log(`[Deposit] Sending interaction request: ${requestId} to ${userId} in ${channelId}`)
+        await (bot as any).sendInteractionRequest(channelId, {
+            type: 'transaction',
+            id: requestId,
+            title: 'Airdrop Deposit',
+            subtitle: `Send ${formatEther(totalAmount)} ${tokenLabel}`,
+            tx: {
+                chainId: '8453',
+                to: tokenAddress,
+                value: '0',
+                data,
+            },
+            recipient: userId,
+        })
+
+        return c.json({ ok: true, message: 'Transaction request sent. Approve it in your Towns chat.' })
+    } catch (err) {
+        console.error('[Deposit] Failed to send interaction request:', err)
+        return c.json({ error: 'Failed to send transaction request: ' + (err instanceof Error ? err.message : String(err)) }, 500)
+    }
+})
+
+// Confirm deposit (manual tx hash fallback)
 app.post('/api/airdrop/:id/confirm-deposit', async (c) => {
     const airdrop = airdrops.get(c.req.param('id'))
     if (!airdrop) {

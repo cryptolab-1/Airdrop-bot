@@ -480,8 +480,8 @@
         <div id="depositScreen" class="hidden">
             <div class="card">
                 <h2>Deposit Tokens</h2>
-                <div class="subtitle">Send tokens to the bot treasury to fund your airdrop</div>
 
+                <!-- Summary -->
                 <div id="depositSummary">
                     <div class="summary-row">
                         <span class="summary-label">Total Deposit</span>
@@ -499,24 +499,62 @@
                         <span class="summary-label">Token</span>
                         <span class="summary-value" id="depositToken">$TOWNS</span>
                     </div>
-                    <div class="summary-row">
-                        <span class="summary-label">Send To (Bot Treasury)</span>
-                        <span class="summary-value" id="depositTreasury" style="font-size:11px; font-family:monospace;">-</span>
-                    </div>
                 </div>
 
                 <div class="divider"></div>
 
-                <div id="depositWalletSection">
-                    <button id="sendDepositBtn">Send Deposit</button>
-                    <div class="hint" style="text-align:center; margin-top:4px;">This will open your wallet to approve the transaction</div>
+                <!-- Primary: Towns interaction request (sent to chat) -->
+                <div id="depositInteractionSection">
+                    <div style="text-align:center; padding:12px 0;">
+                        <div class="spinner-sm" id="depositInteractionSpinner"></div>
+                        <div id="depositInteractionMsg" style="margin-top:10px; font-size:14px; line-height:1.6;">
+                            Sending transaction request to your Towns chat...
+                        </div>
+                    </div>
+                    <div id="depositWaitingSection" class="hidden" style="text-align:center; padding:8px 0;">
+                        <div class="info-box" style="margin-bottom:14px;">
+                            <strong>A transaction request has been sent!</strong><br/>
+                            Check your Towns chat and approve the deposit transaction.<br/>
+                            This page will update automatically once confirmed.
+                        </div>
+                        <div class="spinner-sm" style="margin:0 auto;"></div>
+                        <div style="font-size:12px; opacity:0.6; margin-top:8px;" id="depositPollStatus">Waiting for confirmation...</div>
+                    </div>
+                    <button class="secondary" id="showManualDepositBtn" style="margin-top:12px; font-size:12px;">
+                        Deposit manually instead
+                    </button>
                 </div>
 
-                <div id="depositManualSection" class="hidden">
-                    <div class="info-box">
-                        Wallet connection unavailable. Please send the tokens manually to the address above, then paste the transaction hash below.
+                <!-- Fallback: Manual deposit -->
+                <div id="depositSendSection" class="hidden">
+                    <div style="text-align:center; margin-bottom:12px;">
+                        <div style="font-size:13px; opacity:0.7; margin-bottom:8px;">Send to Bot Treasury</div>
+                        <div id="depositTreasuryFull" style="
+                            font-family: 'Monaco','Courier New',monospace;
+                            font-size: 12px;
+                            word-break: break-all;
+                            background: rgba(0,0,0,0.3);
+                            padding: 12px;
+                            border-radius: 10px;
+                            border: 1px solid rgba(139,92,246,0.25);
+                            user-select: all;
+                            cursor: pointer;
+                            color: #c4b5fd;
+                        ">-</div>
+                        <button class="secondary" id="copyAddressBtn" style="margin-top:8px; font-size:12px; padding:8px 16px; width:auto; display:inline-block;">
+                            Copy Address
+                        </button>
+                        <div id="copiedMsg" style="font-size:11px; color:#4ade80; margin-top:4px; opacity:0;" aria-live="polite">Copied!</div>
                     </div>
-                    <div class="form-group" style="margin-top:12px;">
+
+                    <div class="info-box" style="margin-bottom:14px;">
+                        <strong>How to deposit:</strong><br/>
+                        1. Copy the treasury address above<br/>
+                        2. Send <strong id="depositAmountInstructions">-</strong> from your wallet to that address on <strong>Base</strong><br/>
+                        3. Paste the transaction hash below to confirm
+                    </div>
+
+                    <div class="form-group">
                         <label>Transaction Hash</label>
                         <input type="text" id="manualTxHashInput" placeholder="0x..." />
                     </div>
@@ -524,7 +562,7 @@
                 </div>
 
                 <div id="depositProcessing" class="hidden" style="text-align:center; padding:16px 0;">
-                    <div class="spinner-sm"></div> Processing deposit...
+                    <div class="spinner-sm"></div> Verifying deposit on-chain...
                 </div>
 
                 <div id="depositError" class="error hidden"></div>
@@ -618,7 +656,7 @@
     </div>
 
     <script type="module">
-        import { sdk } from 'https://esm.sh/@farcaster/miniapp-sdk'
+        import { sdk } from 'https://esm.sh/@farcaster/miniapp-sdk@0.2.1'
 
         // Dismiss splash screen immediately
         sdk.actions.ready().catch(() => {})
@@ -998,21 +1036,28 @@
         // ==================================================================
         // DEPOSIT SCREEN
         // ==================================================================
-        function openDepositScreen(airdrop, humanAmount) {
+        let depositPollTimer = null
+
+        async function openDepositScreen(airdrop, humanAmount) {
             showScreen('depositScreen')
             hideError('depositError')
             document.getElementById('depositSuccess').classList.add('hidden')
             document.getElementById('depositProcessing').classList.add('hidden')
-            document.getElementById('depositManualSection').classList.add('hidden')
-            document.getElementById('depositWalletSection').classList.remove('hidden')
+            document.getElementById('depositSendSection').classList.add('hidden')
+            document.getElementById('depositInteractionSection').classList.remove('hidden')
+            document.getElementById('depositWaitingSection').classList.add('hidden')
 
             const label = getTokenLabel()
             document.getElementById('depositTotal').textContent = humanAmount + ' ' + label
             document.getElementById('depositToken').textContent = label
-            document.getElementById('depositTreasury').textContent =
-                botTreasuryAddress ? shortAddr(botTreasuryAddress) : '...'
 
-            // Tax breakdown in deposit screen
+            // Full treasury address (for manual fallback)
+            document.getElementById('depositTreasuryFull').textContent =
+                botTreasuryAddress || '...'
+            document.getElementById('depositAmountInstructions').textContent =
+                humanAmount + ' ' + label
+
+            // Tax breakdown
             if (airdrop.taxPercent > 0 && airdrop.taxAmount !== '0') {
                 document.getElementById('depositTaxPercent').textContent = airdrop.taxPercent
                 document.getElementById('depositTaxAmount').textContent =
@@ -1025,143 +1070,124 @@
                 document.getElementById('depositTaxRow').classList.add('hidden')
                 document.getElementById('depositNetRow').classList.add('hidden')
             }
-        }
 
-        // ---- Deposit: send tokens via Farcaster SDK actions ----
-        // The Towns wallet provider does not support raw eth_sendTransaction
-        // from miniapps. Instead we use the high-level Farcaster SDK actions:
-        //   1. sdk.actions.sendToken  – purpose-built for token transfers
-        //   2. Fallback to manual tx hash entry
+            // Clear previous tx hash input
+            document.getElementById('manualTxHashInput').value = ''
 
-        document.getElementById('sendDepositBtn').addEventListener('click', async () => {
-            hideError('depositError')
-            const btn = document.getElementById('sendDepositBtn')
-            btn.disabled = true
-
+            // Try sending interaction request via Towns bot SDK
             try {
-                // Debug: log available SDK methods
-                console.log('[Deposit] sdk.actions keys:', sdk.actions ? Object.getOwnPropertyNames(Object.getPrototypeOf(sdk.actions)).concat(Object.keys(sdk.actions)) : 'null')
-                console.log('[Deposit] sdk.wallet keys:', sdk.wallet ? Object.getOwnPropertyNames(Object.getPrototypeOf(sdk.wallet)).concat(Object.keys(sdk.wallet)) : 'null')
-                console.log('[Deposit] context.towns.user:', JSON.stringify(context.towns?.user))
+                const userId = context?.towns?.user?.userId
+                const channelId = context?.towns?.channelId
 
-                const tokenAddr = currentAirdrop.currency || TOWNS_ADDRESS
-
-                document.getElementById('depositProcessing').classList.remove('hidden')
-                document.getElementById('depositWalletSection').classList.add('hidden')
-
-                let txHash = null
-
-                // --- Strategy 1: sdk.actions.sendToken (Farcaster miniapp SDK) ---
-                // This is the recommended way to prompt the user to send tokens.
-                // See: https://miniapps.farcaster.xyz/docs/specification#actions
-                if (typeof sdk.actions?.sendToken === 'function') {
-                    console.log('[Deposit] Using sdk.actions.sendToken...')
-                    try {
-                        const result = await sdk.actions.sendToken({
-                            token: {
-                                address: tokenAddr,
-                                chainId: 'eip155:8453',  // Base mainnet
-                            },
-                            amount: currentAirdrop.totalAmount,  // wei string
-                            recipientAddress: botTreasuryAddress,
-                        })
-                        console.log('[Deposit] sendToken result:', JSON.stringify(result))
-                        txHash = result?.transactionHash || result?.hash || result?.receipt?.transactionHash
-                        // If result is a string (tx hash directly)
-                        if (!txHash && typeof result === 'string' && result.startsWith('0x')) {
-                            txHash = result
-                        }
-                    } catch (e) {
-                        console.warn('[Deposit] sendToken failed:', e)
-                        // If user rejected, don't try other methods
-                        if (e?.message?.includes('reject') || e?.message?.includes('denied') || e?.message?.includes('cancel')) {
-                            throw e
-                        }
-                    }
-                } else {
-                    console.log('[Deposit] sdk.actions.sendToken not available')
+                if (!userId || !channelId) {
+                    throw new Error('Missing userId or channelId from context')
                 }
 
-                // --- Strategy 2: sdk.wallet.ethProviderRequest with eth_sendTransaction ---
-                if (!txHash && typeof sdk.wallet?.ethProviderRequest === 'function') {
-                    console.log('[Deposit] Trying ethProviderRequest eth_sendTransaction...')
-                    try {
-                        const userAddress = context.towns?.user?.address
-                        const calldata = encodeErc20Transfer(botTreasuryAddress, currentAirdrop.totalAmount)
-                        txHash = await sdk.wallet.ethProviderRequest({
-                            method: 'eth_sendTransaction',
-                            params: [{
-                                from: userAddress,
-                                to: tokenAddr,
-                                data: calldata,
-                            }]
-                        })
-                        console.log('[Deposit] ethProviderRequest returned:', txHash)
-                    } catch (e) {
-                        console.warn('[Deposit] ethProviderRequest failed:', e)
-                    }
+                document.getElementById('depositInteractionMsg').textContent =
+                    'Sending transaction request to your Towns chat...'
+
+                const resp = await fetch(`/api/airdrop/${airdrop.id}/request-deposit`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ userId, channelId }),
+                })
+                const data = await resp.json()
+
+                if (!resp.ok) {
+                    throw new Error(data.error || 'Failed to send transaction request')
                 }
 
-                // --- Strategy 3: getEthereumProvider + request ---
-                if (!txHash && typeof sdk.wallet?.getEthereumProvider === 'function') {
-                    console.log('[Deposit] Trying getEthereumProvider...')
-                    try {
-                        const provider = await sdk.wallet.getEthereumProvider()
-                        if (provider?.request) {
-                            const userAddress = context.towns?.user?.address
-                            const calldata = encodeErc20Transfer(botTreasuryAddress, currentAirdrop.totalAmount)
-                            txHash = await provider.request({
-                                method: 'eth_sendTransaction',
-                                params: [{
-                                    from: userAddress,
-                                    to: tokenAddr,
-                                    data: calldata,
-                                }]
-                            })
-                            console.log('[Deposit] provider.request returned:', txHash)
-                        }
-                    } catch (e) {
-                        console.warn('[Deposit] getEthereumProvider failed:', e)
-                    }
-                }
+                // Show waiting state
+                document.getElementById('depositInteractionSpinner').classList.add('hidden')
+                document.getElementById('depositInteractionMsg').classList.add('hidden')
+                document.getElementById('depositWaitingSection').classList.remove('hidden')
 
-                // If no method worked, show manual fallback
-                if (!txHash) {
-                    document.getElementById('depositProcessing').classList.add('hidden')
-                    document.getElementById('depositWalletSection').classList.add('hidden')
-                    document.getElementById('depositManualSection').classList.remove('hidden')
-                    return
-                }
-
-                // Confirm deposit with backend
-                console.log('[Deposit] Confirming tx:', txHash)
-                const updated = await apiConfirmDeposit(currentAirdrop.id, txHash)
-                currentAirdrop = updated
-                document.getElementById('depositProcessing').classList.add('hidden')
-
-                if (updated.airdropType === 'space') {
-                    document.getElementById('depositSuccess').textContent =
-                        'Deposit confirmed! Distribution in progress...'
-                    document.getElementById('depositSuccess').classList.remove('hidden')
-                    setTimeout(() => openStatusScreen(updated), 2000)
-                } else {
-                    document.getElementById('depositSuccess').textContent =
-                        'Deposit confirmed! Your public airdrop is live.'
-                    document.getElementById('depositSuccess').classList.remove('hidden')
-                    setTimeout(() => openStatusScreen(updated), 2000)
-                }
+                // Start polling for confirmation
+                startDepositPolling(airdrop.id)
 
             } catch (err) {
-                console.error('[Deposit] Error:', err)
-                document.getElementById('depositProcessing').classList.add('hidden')
-                showError('depositError', err.message || 'Transaction failed')
-                document.getElementById('depositWalletSection').classList.remove('hidden')
-            } finally {
-                btn.disabled = false
+                console.warn('[Deposit] Interaction request failed, showing manual fallback:', err.message)
+                // Fall back to manual deposit
+                switchToManualDeposit(err.message)
             }
+        }
+
+        function switchToManualDeposit(reason) {
+            document.getElementById('depositInteractionSection').classList.add('hidden')
+            document.getElementById('depositSendSection').classList.remove('hidden')
+            if (reason) {
+                console.log('[Deposit] Manual fallback reason:', reason)
+            }
+            stopDepositPolling()
+        }
+
+        function startDepositPolling(airdropId) {
+            stopDepositPolling()
+            let attempts = 0
+            depositPollTimer = setInterval(async () => {
+                attempts++
+                try {
+                    const resp = await fetch(`/api/airdrop/${airdropId}`)
+                    if (!resp.ok) return
+                    const data = await resp.json()
+
+                    const statusEl = document.getElementById('depositPollStatus')
+                    statusEl.textContent = `Waiting for confirmation... (${attempts * 3}s)`
+
+                    if (data.status === 'funded' || data.status === 'distributing' || data.status === 'completed') {
+                        stopDepositPolling()
+                        currentAirdrop = data
+                        document.getElementById('depositInteractionSection').classList.add('hidden')
+                        document.getElementById('depositProcessing').classList.add('hidden')
+
+                        if (data.airdropType === 'space') {
+                            document.getElementById('depositSuccess').textContent =
+                                'Deposit confirmed! Distribution in progress...'
+                        } else {
+                            document.getElementById('depositSuccess').textContent =
+                                'Deposit confirmed! Your public airdrop is now live.'
+                        }
+                        document.getElementById('depositSuccess').classList.remove('hidden')
+                        setTimeout(() => openStatusScreen(data), 2000)
+                    }
+                } catch (e) {
+                    // ignore poll errors
+                }
+            }, 3000) // Poll every 3 seconds
+        }
+
+        function stopDepositPolling() {
+            if (depositPollTimer) {
+                clearInterval(depositPollTimer)
+                depositPollTimer = null
+            }
+        }
+
+        // Show manual deposit fallback
+        document.getElementById('showManualDepositBtn').addEventListener('click', () => {
+            switchToManualDeposit('User chose manual deposit')
         })
 
-        // Manual deposit confirmation
+        // Copy treasury address to clipboard
+        document.getElementById('copyAddressBtn').addEventListener('click', () => {
+            const addr = botTreasuryAddress
+            if (!addr) return
+            navigator.clipboard.writeText(addr).then(() => {
+                const msg = document.getElementById('copiedMsg')
+                msg.style.opacity = '1'
+                setTimeout(() => { msg.style.opacity = '0' }, 2000)
+            }).catch(() => {
+                // Fallback: select the text
+                const el = document.getElementById('depositTreasuryFull')
+                const range = document.createRange()
+                range.selectNodeContents(el)
+                const sel = window.getSelection()
+                sel.removeAllRanges()
+                sel.addRange(range)
+            })
+        })
+
+        // Confirm deposit with tx hash (manual fallback)
         document.getElementById('confirmManualDepositBtn').addEventListener('click', async () => {
             hideError('depositError')
             const txHash = document.getElementById('manualTxHashInput').value.trim()
@@ -1172,8 +1198,9 @@
 
             const btn = document.getElementById('confirmManualDepositBtn')
             btn.disabled = true
-            btn.textContent = 'Confirming...'
+            btn.textContent = 'Verifying...'
             document.getElementById('depositProcessing').classList.remove('hidden')
+            document.getElementById('depositSendSection').classList.add('hidden')
 
             try {
                 const updated = await apiConfirmDeposit(currentAirdrop.id, txHash)
@@ -1188,10 +1215,10 @@
                         'Deposit confirmed! Your public airdrop is now live.'
                 }
                 document.getElementById('depositSuccess').classList.remove('hidden')
-                document.getElementById('depositManualSection').classList.add('hidden')
                 setTimeout(() => openStatusScreen(updated), 2000)
             } catch (err) {
                 document.getElementById('depositProcessing').classList.add('hidden')
+                document.getElementById('depositSendSection').classList.remove('hidden')
                 showError('depositError', err.message)
             } finally {
                 btn.disabled = false
