@@ -25,6 +25,7 @@ import {
     chunkRecipients,
 } from './airdrop'
 import { generateManifest, generateEmbedMeta } from './manifest'
+import { OG_IMAGE, SPLASH_IMAGE, ICON_IMAGE } from './png'
 
 // Initialize bot with slash commands
 const bot = await makeTownsBot(process.env.APP_PRIVATE_DATA!, process.env.JWT_SECRET!, {
@@ -49,49 +50,25 @@ bot.onSlashCommand('help', async (handler, { channelId }) => {
 })
 
 bot.onSlashCommand('drop', async (handler, event) => {
-    const { channelId, userId, isDm } = event
+    const { channelId, isDm } = event
     
     if (isDm) {
         await handler.sendMessage(channelId, 'Use `/drop` in a space channel.')
         return
     }
 
-    // Send a message with a button to open the mini app
     await handler.sendMessage(
         channelId,
-        '**$TOWNS Airdrop** - Create and distribute token airdrops to NFT holders',
-    )
-    await handler.sendInteractionRequest(channelId, {
-        type: 'form',
-        id: 'open-airdrop-app',
-        components: [
-            { id: 'launch', type: 'button', label: '💸 Launch Airdrop App' },
-        ],
-    })
-})
-
-bot.onInteractionResponse(async (handler, event) => {
-    if (event.response.payload.content?.case !== 'form') return
-
-    const form = event.response.payload.content.value
-    if (form.requestId !== 'open-airdrop-app') return
-
-    for (const c of form.components) {
-        if (c.component.case === 'button' && c.id === 'launch') {
-            await handler.sendMessage(
-                event.channelId,
-                MINIAPP_URL,
+        MINIAPP_URL,
+        {
+            attachments: [
                 {
-                    attachments: [
-                        {
-                            type: 'miniapp',
-                            url: MINIAPP_URL,
-                        },
-                    ],
+                    type: 'miniapp',
+                    url: MINIAPP_URL,
                 },
-            )
-        }
-    }
+            ],
+        },
+    )
 })
 
 // ============================================================================
@@ -250,33 +227,25 @@ honoApp.get('/embed-meta', (c) => {
     return c.json(generateEmbedMeta())
 })
 
-// OG image (3:2 ratio = 1200x800)
+// OG image (3:2 ratio = 1200x800) - real PNG
 honoApp.get('/og-image.png', (c) => {
-    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="800">
-        <rect width="1200" height="800" fill="#7C3AED"/>
-        <text x="600" y="340" text-anchor="middle" font-family="Arial,sans-serif" font-size="80" font-weight="bold" fill="white">💸 $TOWNS</text>
-        <text x="600" y="440" text-anchor="middle" font-family="Arial,sans-serif" font-size="50" fill="rgba(255,255,255,0.9)">Airdrop</text>
-        <text x="600" y="520" text-anchor="middle" font-family="Arial,sans-serif" font-size="28" fill="rgba(255,255,255,0.7)">Distribute tokens to NFT holders</text>
-    </svg>`
-    return new Response(svg, { headers: { 'Content-Type': 'image/svg+xml', 'Cache-Control': 'public, max-age=86400' } })
+    return new Response(OG_IMAGE, {
+        headers: { 'Content-Type': 'image/png', 'Cache-Control': 'public, max-age=86400' },
+    })
 })
 
-// Splash image (200x200)
+// Splash image (200x200) - real PNG
 honoApp.get('/splash.png', (c) => {
-    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="200" height="200">
-        <rect width="200" height="200" fill="#7C3AED"/>
-        <text x="100" y="115" text-anchor="middle" font-family="Arial,sans-serif" font-size="64">💸</text>
-    </svg>`
-    return new Response(svg, { headers: { 'Content-Type': 'image/svg+xml', 'Cache-Control': 'public, max-age=86400' } })
+    return new Response(SPLASH_IMAGE, {
+        headers: { 'Content-Type': 'image/png', 'Cache-Control': 'public, max-age=86400' },
+    })
 })
 
-// Icon (1024x1024)
+// Icon (1024x1024) - real PNG
 honoApp.get('/icon.png', (c) => {
-    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024">
-        <rect width="1024" height="1024" rx="200" fill="#7C3AED"/>
-        <text x="512" y="580" text-anchor="middle" font-family="Arial,sans-serif" font-size="400">💸</text>
-    </svg>`
-    return new Response(svg, { headers: { 'Content-Type': 'image/svg+xml', 'Cache-Control': 'public, max-age=86400' } })
+    return new Response(ICON_IMAGE, {
+        headers: { 'Content-Type': 'image/png', 'Cache-Control': 'public, max-age=86400' },
+    })
 })
 
 // ============================================================================
