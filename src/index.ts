@@ -207,7 +207,11 @@ honoApp.use('/api/*', cors({
 // ============================================================================
 
 honoApp.get('/.well-known/farcaster.json', (c) => {
-    return c.json(generateManifest())
+    // Redirect to Farcaster hosted manifest (includes dashboard-configured fields)
+    return c.redirect(
+        'https://api.farcaster.xyz/miniapps/hosted-manifest/019c356b-6909-fbcf-3306-154b6483a2e4',
+        307,
+    )
 })
 
 honoApp.get('/.well-known/agent-metadata.json', async (c) => {
