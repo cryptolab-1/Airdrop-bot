@@ -95,6 +95,7 @@ interface Airdrop {
     airdropType: 'space' | 'public'
     spaceNftAddress?: string // The space's membership NFT contract (= spaceId)
     currency: string // ERC20 token contract address
+    currencySymbol: string // e.g. "TOWNS", "USDC"
     currencyDecimals: number // Token decimals (default 18)
     totalAmount: string // gross amount deposited
     taxPercent: number // e.g. 2 means 2%
@@ -176,6 +177,7 @@ function airdropToResponse(a: Airdrop) {
         airdropType: a.airdropType,
         spaceNftAddress: a.spaceNftAddress || null,
         currency: a.currency,
+        currencySymbol: a.currencySymbol,
         currencyDecimals: a.currencyDecimals,
         totalAmount: a.totalAmount,
         taxPercent: a.taxPercent,
@@ -1016,7 +1018,7 @@ app.get('/api/holders', async (c) => {
 app.post('/api/airdrop', async (c) => {
     try {
         const body = await c.req.json()
-        const { airdropType, totalAmount, creatorAddress, currency, spaceId, currencyDecimals: rawDecimals, creatorDisplayName } = body
+        const { airdropType, totalAmount, creatorAddress, currency, currencySymbol: rawSymbol, spaceId, currencyDecimals: rawDecimals, creatorDisplayName } = body
 
         if (!airdropType || !totalAmount || !creatorAddress) {
             return c.json({ error: 'Missing required fields' }, 400)
@@ -1114,6 +1116,9 @@ app.post('/api/airdrop', async (c) => {
             airdropType,
             spaceNftAddress,
             currency: tokenAddress,
+            currencySymbol: typeof rawSymbol === 'string' && rawSymbol
+                ? rawSymbol
+                : (tokenAddress.toLowerCase() === TOWNS_ADDRESS.toLowerCase() ? 'TOWNS' : ''),
             currencyDecimals: typeof rawDecimals === 'number' ? rawDecimals : 18,
             totalAmount,
             taxPercent: AIRDROP_TAX_PERCENT,

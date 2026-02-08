@@ -392,8 +392,7 @@
         <div id="homeScreen" class="card">
             <img id="homePfp" class="pfp" src="" alt="Profile" />
             <h1 style="text-align:center;">Welcome</h1>
-            <div id="homeUsername" style="text-align:center; font-size:16px; font-weight:600; color:#c4b5fd; margin-bottom:4px;"></div>
-            <div id="homeUserId" class="mono" style="text-align:center; margin-bottom:20px;"></div>
+            <div id="homeUsername" style="text-align:center; font-size:16px; font-weight:600; color:#c4b5fd; margin-bottom:20px;"></div>
 
             <button id="btnCreateAirdrop">Create an Airdrop</button>
             <button id="btnJoinPublic" class="secondary" style="margin-top:8px;">Join a Public Airdrop</button>
@@ -815,10 +814,16 @@
             return a.slice(0, 6) + '...' + a.slice(-4)
         }
 
-        function getTokenLabel() {
+        function getTokenSymbol() {
             const sel = document.getElementById('currencySelect').value
-            if (sel === 'towns') return '$TOWNS'
-            if (resolvedTokenSymbol) return '$' + resolvedTokenSymbol
+            if (sel === 'towns') return 'TOWNS'
+            if (resolvedTokenSymbol) return resolvedTokenSymbol
+            return ''
+        }
+
+        function getTokenLabel() {
+            const sym = getTokenSymbol()
+            if (sym) return '$' + sym
             if (resolvedTokenName) return resolvedTokenName
             const custom = document.getElementById('customCurrencyInput').value.trim()
             return custom ? shortAddr(custom) : 'Token'
@@ -873,12 +878,12 @@
             return await res.json()
         }
 
-        async function apiCreateAirdrop(airdropType, totalAmountWei, creatorAddress, currency, decimals, displayName) {
+        async function apiCreateAirdrop(airdropType, totalAmountWei, creatorAddress, currency, decimals, displayName, symbol) {
             const spaceAddr = getSpaceAddress()
             const res = await fetch('/api/airdrop', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ airdropType, totalAmount: totalAmountWei, creatorAddress, currency, spaceId: spaceAddr, currencyDecimals: decimals, creatorDisplayName: displayName })
+                body: JSON.stringify({ airdropType, totalAmount: totalAmountWei, creatorAddress, currency, currencySymbol: symbol, spaceId: spaceAddr, currencyDecimals: decimals, creatorDisplayName: displayName })
             })
             if (!res.ok) {
                 const err = await res.json().catch(() => ({}))
@@ -1237,7 +1242,8 @@
                     context.towns.user.userId,
                     currency,
                     getActiveDecimals(),
-                    context?.user?.displayName || ''
+                    context?.user?.displayName || '',
+                    getTokenSymbol()
                 )
                 currentAirdrop = airdrop
                 openDepositScreen(airdrop, amount)
@@ -1478,11 +1484,11 @@
                     card.className = 'airdrop-card'
                     card.innerHTML = `
                         <div class="airdrop-card-header">
-                            <span class="airdrop-card-title">${formatTokens(drop.totalAmount, drop.currencyDecimals ?? 18)} tokens</span>
+                            <span class="airdrop-card-title">${formatTokens(drop.totalAmount, drop.currencyDecimals ?? 18)} ${drop.currencySymbol ? '$' + drop.currencySymbol : 'tokens'}</span>
                             <span class="status-badge status-${drop.status}">${drop.status.toUpperCase()}</span>
                         </div>
                         <div class="airdrop-card-detail">${drop.recipientCount} participant${drop.recipientCount !== 1 ? 's' : ''}</div>
-                        <div class="airdrop-card-detail">Per person: ${drop.recipientCount > 0 ? formatTokens(drop.amountPerRecipient, drop.currencyDecimals ?? 18) : '—'} tokens</div>
+                        <div class="airdrop-card-detail">Per person: ${drop.recipientCount > 0 ? formatTokens(drop.amountPerRecipient, drop.currencyDecimals ?? 18) : '—'} ${drop.currencySymbol ? '$' + drop.currencySymbol : 'tokens'}</div>
                         <div class="airdrop-card-detail" style="opacity:0.4;">Created by ${drop.creatorName || shortAddr(drop.creatorAddress)}</div>
                         <div class="airdrop-card-actions">
                             ${canJoin && !alreadyJoined ? `<button class="sm" onclick="joinPublicDrop('${drop.id}')">Join</button>` : ''}
@@ -1552,13 +1558,14 @@
             const typeLabel = airdrop.airdropType === 'space' ? 'Space Members' : 'Public'
             document.getElementById('statusType').textContent = typeLabel
             const dec = airdrop.currencyDecimals ?? 18
-            document.getElementById('statusTotal').textContent = formatTokens(airdrop.totalAmount, dec) + ' tokens'
+            const sym = airdrop.currencySymbol ? '$' + airdrop.currencySymbol : 'tokens'
+            document.getElementById('statusTotal').textContent = formatTokens(airdrop.totalAmount, dec) + ' ' + sym
 
             // Tax info
             if (airdrop.taxPercent > 0 && airdrop.taxAmount && airdrop.taxAmount !== '0') {
                 document.getElementById('statusTaxPercent').textContent = airdrop.taxPercent
-                document.getElementById('statusTaxAmount').textContent = formatTokens(airdrop.taxAmount, dec) + ' tokens'
-                document.getElementById('statusNetAmount').textContent = formatTokens(airdrop.netAmount, dec) + ' tokens'
+                document.getElementById('statusTaxAmount').textContent = formatTokens(airdrop.taxAmount, dec) + ' ' + sym
+                document.getElementById('statusNetAmount').textContent = formatTokens(airdrop.netAmount, dec) + ' ' + sym
                 document.getElementById('statusTaxRow').classList.remove('hidden')
                 document.getElementById('statusNetRow').classList.remove('hidden')
             } else {
@@ -1567,7 +1574,7 @@
             }
 
             document.getElementById('statusPerRecipient').textContent =
-                airdrop.recipientCount > 0 ? formatTokens(airdrop.amountPerRecipient, dec) + ' tokens' : '—'
+                airdrop.recipientCount > 0 ? formatTokens(airdrop.amountPerRecipient, dec) + ' ' + sym : '—'
             document.getElementById('statusRecipientCount').textContent = airdrop.recipientCount
 
             const userId = context?.towns?.user?.userId?.toLowerCase() || ''
@@ -1706,19 +1713,33 @@
                 document.getElementById('loading').style.display = 'none'
                 document.getElementById('app').style.display = 'block'
 
-                // Profile picture
+                // Profile picture — try multiple sources
                 const userId = context.towns.user.userId
-                const pfpUrl = context.user?.pfpUrl
-                    || `https://river.delivery/user/${userId}/image`
-                document.getElementById('homePfp').src = pfpUrl
-                document.getElementById('homePfp').onerror = function() {
-                    this.style.display = 'none'
+                const pfpEl = document.getElementById('homePfp')
+                const pfpCandidates = [
+                    context.user?.pfpUrl,
+                    context.towns?.user?.pfpUrl,
+                    `https://river.delivery/user/${userId}/image`,
+                ].filter(Boolean)
+
+                if (pfpCandidates.length > 0) {
+                    let pfpIdx = 0
+                    pfpEl.onerror = function() {
+                        pfpIdx++
+                        if (pfpIdx < pfpCandidates.length) {
+                            this.src = pfpCandidates[pfpIdx]
+                        } else {
+                            this.style.display = 'none'
+                        }
+                    }
+                    pfpEl.src = pfpCandidates[0]
+                } else {
+                    pfpEl.style.display = 'none'
                 }
 
                 // Username
                 const displayName = context.user?.displayName || 'User'
                 document.getElementById('homeUsername').textContent = displayName
-                document.getElementById('homeUserId').textContent = userId
 
                 showScreen('homeScreen')
 
