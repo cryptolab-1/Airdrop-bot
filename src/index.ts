@@ -1728,6 +1728,94 @@ app.get('/api/user-wallet', (c) => {
     return c.json({ wallet })
 })
 
+// Admin: get treasury token balance
+app.get('/api/admin/treasury-balance', async (c) => {
+    const tokenAddress = (c.req.query('token') ?? '').trim()
+    if (!tokenAddress || !isEthAddress(tokenAddress)) {
+        return c.json({ error: 'Invalid token address' }, 400)
+    }
+
+    try {
+        const treasury = bot.appAddress as Address
+        const balance = await readContract(bot.viem, {
+            address: tokenAddress as Address,
+            abi: erc20Abi,
+            functionName: 'balanceOf',
+            args: [treasury],
+        })
+        return c.json({ balance: balance.toString(), treasury })
+    } catch (err) {
+        console.error('[TreasuryBalance] Error:', err)
+        return c.json({ error: 'Failed to read balance' }, 500)
+    }
+})
+
+// Admin: recover funds from treasury to admin wallet
+app.post('/api/admin/recover-funds', async (c) => {
+    try {
+        const body = await c.req.json()
+        const { userId, tokenAddress, amount } = body
+
+        if (!userId || !isAdminUser(userId)) {
+            return c.json({ error: 'Unauthorized: admin only' }, 403)
+        }
+
+        if (!tokenAddress || !isEthAddress(tokenAddress)) {
+            return c.json({ error: 'Invalid token address' }, 400)
+        }
+
+        if (!amount || BigInt(amount) <= 0n) {
+            return c.json({ error: 'Invalid amount' }, 400)
+        }
+
+        // Resolve admin's smart wallet for receiving funds
+        let recipientAddress: Address | null = null
+
+        // Try ADMIN_RIGHTS userId → smart wallet
+        const knownWallet = getUserWallet(userId)
+        if (knownWallet && isEthAddress(knownWallet)) {
+            recipientAddress = knownWallet as Address
+        } else {
+            // Resolve via SDK
+            try {
+                const smartAccount = await getSmartAccountFromUserId(bot as AnyBot, { userId })
+                recipientAddress = smartAccount as Address
+                setUserWallet(userId, smartAccount as string)
+            } catch (err) {
+                console.error(`[Recover] Failed to resolve admin wallet for ${userId}:`, err)
+            }
+        }
+
+        if (!recipientAddress) {
+            return c.json({ error: 'Cannot resolve admin wallet address' }, 500)
+        }
+
+        const totalAmount = BigInt(amount)
+        const botAddress = bot.appAddress as Address
+
+        console.log(`[Recover] Sending ${totalAmount} of ${tokenAddress} from ${botAddress} to ${recipientAddress}`)
+
+        const result = await runBotDistribution(
+            [recipientAddress],
+            totalAmount,
+            totalAmount,
+            botAddress,
+            tokenAddress as Address,
+        )
+
+        if (!result.ok) {
+            console.error('[Recover] Transfer failed:', result.error)
+            return c.json({ error: `Transfer failed: ${result.error}` }, 500)
+        }
+
+        console.log(`[Recover] Success: ${result.txHash}`)
+        return c.json({ ok: true, txHash: result.txHash, recipient: recipientAddress })
+    } catch (err) {
+        console.error('[Recover] Error:', err)
+        return c.json({ error: 'Failed to recover funds' }, 500)
+    }
+})
+
 // Health check
 app.get('/health', (c) => {
     return c.json({

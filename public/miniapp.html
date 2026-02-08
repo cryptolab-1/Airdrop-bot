@@ -467,6 +467,11 @@
             <button id="btnJoinPublic" class="secondary" style="margin-top:8px;">Join a Public Airdrop</button>
             <button id="btnHistory" class="secondary" style="margin-top:8px;">Airdrop History</button>
             <button id="btnLeaderboard" class="secondary" style="margin-top:8px;">Leaderboard</button>
+
+            <div id="adminHomeSection" class="hidden" style="margin-top:24px;">
+                <div class="divider"></div>
+                <button id="btnRecoverFunds" class="danger" style="margin-top:8px;">Recover Treasury Funds</button>
+            </div>
         </div>
 
         <!-- ===================== CREATE AIRDROP SCREEN ===================== -->
@@ -864,6 +869,59 @@
             </div>
         </div>
 
+        <!-- ===================== RECOVER FUNDS SCREEN ===================== -->
+        <div id="recoverScreen" class="hidden">
+            <div class="card">
+                <button class="back-btn" id="recoverBackBtn">&larr; Back</button>
+                <h2>Recover Treasury Funds</h2>
+                <div class="subtitle">Transfer tokens from the bot treasury to your wallet</div>
+
+                <div class="form-group" style="margin-top:16px;">
+                    <label>Select Token</label>
+                    <select id="recoverTokenSelect">
+                        <option value="towns">$TOWNS</option>
+                        <option value="usdc">$USDC</option>
+                        <option value="weth">$WETH</option>
+                        <option value="cbbtc">$cbBTC</option>
+                        <option value="custom">Custom Token</option>
+                    </select>
+                </div>
+
+                <div id="recoverCustomGroup" class="hidden">
+                    <div class="form-group">
+                        <label>Token Contract Address</label>
+                        <input type="text" id="recoverCustomInput" placeholder="0x..." />
+                    </div>
+                </div>
+
+                <div id="recoverBalanceSection" class="hidden" style="margin-top:12px;">
+                    <div class="info-row">
+                        <span class="info-label">Treasury Balance</span>
+                        <span class="info-value" id="recoverBalance">-</span>
+                    </div>
+                    <div class="info-row">
+                        <span class="info-label">Treasury Address</span>
+                        <span class="info-value" id="recoverTreasury" style="font-size:11px; font-family:monospace;">-</span>
+                    </div>
+                </div>
+
+                <div id="recoverBalanceLoading" class="hidden" style="text-align:center; padding:12px;">
+                    <span class="spinner-sm"></span> Checking balance...
+                </div>
+
+                <div class="form-group" style="margin-top:12px;">
+                    <label>Amount to Recover</label>
+                    <input type="text" id="recoverAmountInput" placeholder="Amount in tokens (or 'max')" />
+                    <div class="hint">Type "max" to recover the full balance</div>
+                </div>
+
+                <button id="recoverBtn" disabled style="margin-top:16px;">Recover Funds</button>
+
+                <div id="recoverSuccess" class="success hidden" style="margin-top:12px;"></div>
+                <div id="recoverError" class="error hidden" style="margin-top:8px;"></div>
+            </div>
+        </div>
+
     </div>
 
     <script type="module">
@@ -921,7 +979,7 @@
         // ==================================================================
         // Screen navigation
         // ==================================================================
-        const screens = ['homeScreen', 'createScreen', 'depositScreen', 'publicScreen', 'statusScreen', 'leaderboardScreen', 'historyScreen']
+        const screens = ['homeScreen', 'createScreen', 'depositScreen', 'publicScreen', 'statusScreen', 'leaderboardScreen', 'historyScreen', 'recoverScreen']
         const screenHistory = ['homeScreen']
 
         function showScreen(name, skipHistory) {
@@ -2480,6 +2538,200 @@
         })
 
         // ==================================================================
+        // RECOVER FUNDS SCREEN
+        // ==================================================================
+        let recoverTokenDecimals = 18
+        let recoverTokenSymbol = ''
+        let recoverBalanceWei = '0'
+
+        document.getElementById('btnRecoverFunds').addEventListener('click', () => {
+            showScreen('recoverScreen')
+            initRecoverScreen()
+        })
+
+        document.getElementById('recoverBackBtn').addEventListener('click', () => {
+            goBack()
+        })
+
+        document.getElementById('recoverTokenSelect').addEventListener('change', () => {
+            const val = document.getElementById('recoverTokenSelect').value
+            if (val === 'custom') {
+                document.getElementById('recoverCustomGroup').classList.remove('hidden')
+            } else {
+                document.getElementById('recoverCustomGroup').classList.add('hidden')
+            }
+            resetRecoverState()
+            if (val !== 'custom') fetchRecoverBalance()
+        })
+
+        document.getElementById('recoverCustomInput').addEventListener('input', () => {
+            resetRecoverState()
+            const addr = document.getElementById('recoverCustomInput').value.trim()
+            if (/^0x[a-fA-F0-9]{40}$/.test(addr)) {
+                fetchRecoverBalance()
+            }
+        })
+
+        document.getElementById('recoverAmountInput').addEventListener('input', () => {
+            validateRecoverForm()
+        })
+
+        function initRecoverScreen() {
+            document.getElementById('recoverTokenSelect').value = 'towns'
+            document.getElementById('recoverCustomGroup').classList.add('hidden')
+            document.getElementById('recoverCustomInput').value = ''
+            document.getElementById('recoverAmountInput').value = ''
+            resetRecoverState()
+            fetchRecoverBalance()
+        }
+
+        function resetRecoverState() {
+            recoverBalanceWei = '0'
+            recoverTokenDecimals = 18
+            recoverTokenSymbol = ''
+            document.getElementById('recoverBalanceSection').classList.add('hidden')
+            document.getElementById('recoverBalanceLoading').classList.add('hidden')
+            document.getElementById('recoverSuccess').classList.add('hidden')
+            hideError('recoverError')
+            document.getElementById('recoverBtn').disabled = true
+        }
+
+        function getRecoverTokenAddress() {
+            const sel = document.getElementById('recoverTokenSelect').value
+            if (KNOWN_TOKENS[sel]) return KNOWN_TOKENS[sel].address
+            return document.getElementById('recoverCustomInput').value.trim()
+        }
+
+        function getRecoverDecimals() {
+            const sel = document.getElementById('recoverTokenSelect').value
+            if (KNOWN_TOKENS[sel]) return KNOWN_TOKENS[sel].decimals
+            return recoverTokenDecimals
+        }
+
+        function getRecoverSymbol() {
+            const sel = document.getElementById('recoverTokenSelect').value
+            if (KNOWN_TOKENS[sel]) return '$' + KNOWN_TOKENS[sel].symbol
+            return recoverTokenSymbol ? '$' + recoverTokenSymbol : 'tokens'
+        }
+
+        async function fetchRecoverBalance() {
+            const addr = getRecoverTokenAddress()
+            if (!addr || !/^0x[a-fA-F0-9]{40}$/.test(addr)) return
+
+            document.getElementById('recoverBalanceLoading').classList.remove('hidden')
+            document.getElementById('recoverBalanceSection').classList.add('hidden')
+
+            try {
+                // For custom tokens, also fetch decimals/symbol
+                const sel = document.getElementById('recoverTokenSelect').value
+                if (sel === 'custom') {
+                    const infoRes = await fetch(`/api/token-info?address=${encodeURIComponent(addr)}`)
+                    if (infoRes.ok) {
+                        const info = await infoRes.json()
+                        recoverTokenDecimals = info.decimals ?? 18
+                        recoverTokenSymbol = info.symbol || ''
+                    }
+                }
+
+                const res = await fetch(`/api/admin/treasury-balance?token=${encodeURIComponent(addr)}`)
+                if (!res.ok) throw new Error('Failed to fetch balance')
+                const data = await res.json()
+
+                recoverBalanceWei = data.balance || '0'
+                const dec = getRecoverDecimals()
+                const sym = getRecoverSymbol()
+
+                document.getElementById('recoverBalance').textContent =
+                    formatTokens(recoverBalanceWei, dec) + ' ' + sym
+                document.getElementById('recoverTreasury').textContent = shortAddr(data.treasury || '')
+                document.getElementById('recoverTreasury').title = data.treasury || ''
+
+                document.getElementById('recoverBalanceLoading').classList.add('hidden')
+                document.getElementById('recoverBalanceSection').classList.remove('hidden')
+                validateRecoverForm()
+            } catch (err) {
+                document.getElementById('recoverBalanceLoading').classList.add('hidden')
+                showError('recoverError', 'Failed to fetch balance: ' + err.message)
+            }
+        }
+
+        function validateRecoverForm() {
+            const input = document.getElementById('recoverAmountInput').value.trim().toLowerCase()
+            const bal = BigInt(recoverBalanceWei)
+            if (bal <= 0n) {
+                document.getElementById('recoverBtn').disabled = true
+                return
+            }
+            if (input === 'max') {
+                document.getElementById('recoverBtn').disabled = false
+                return
+            }
+            const wei = tokensToWei(input, getRecoverDecimals())
+            document.getElementById('recoverBtn').disabled = !wei || BigInt(wei) <= 0n || BigInt(wei) > bal
+        }
+
+        // Two-click confirmation for recover
+        document.getElementById('recoverBtn').addEventListener('click', async () => {
+            const btn = document.getElementById('recoverBtn')
+            if (!btn.dataset.confirmed) {
+                btn.dataset.confirmed = 'true'
+                btn.textContent = 'Confirm Recovery?'
+                setTimeout(() => { if (btn) { delete btn.dataset.confirmed; btn.textContent = 'Recover Funds' } }, 4000)
+                return
+            }
+
+            hideError('recoverError')
+            document.getElementById('recoverSuccess').classList.add('hidden')
+            btn.disabled = true
+            btn.textContent = 'Recovering...'
+            delete btn.dataset.confirmed
+
+            try {
+                const input = document.getElementById('recoverAmountInput').value.trim().toLowerCase()
+                let amountWei
+                if (input === 'max') {
+                    amountWei = recoverBalanceWei
+                } else {
+                    amountWei = tokensToWei(input, getRecoverDecimals())
+                }
+
+                if (!amountWei || BigInt(amountWei) <= 0n) {
+                    throw new Error('Invalid amount')
+                }
+
+                const userId = context?.towns?.user?.userId || ''
+                const res = await fetch('/api/admin/recover-funds', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        userId,
+                        tokenAddress: getRecoverTokenAddress(),
+                        amount: amountWei,
+                    })
+                })
+                const data = await res.json()
+                if (!res.ok) throw new Error(data.error || 'Failed to recover')
+
+                const dec = getRecoverDecimals()
+                const sym = getRecoverSymbol()
+                const txLink = data.txHash
+                    ? ` <a href="https://basescan.org/tx/${data.txHash}" target="_blank" style="color:#93c5fd;">View tx</a>`
+                    : ''
+                document.getElementById('recoverSuccess').innerHTML =
+                    `Recovered ${formatTokens(amountWei, dec)} ${sym} to ${shortAddr(data.recipient)}${txLink}`
+                document.getElementById('recoverSuccess').classList.remove('hidden')
+
+                // Refresh balance
+                fetchRecoverBalance()
+            } catch (err) {
+                showError('recoverError', err.message)
+            } finally {
+                btn.disabled = false
+                btn.textContent = 'Recover Funds'
+            }
+        })
+
+        // ==================================================================
         // INIT
         // ==================================================================
         async function init() {
@@ -2494,6 +2746,7 @@
                 const userId = context?.towns?.user?.userId || ''
                 if (adminAddress && userId && userId.toLowerCase() === adminAddress) {
                     isAdmin = true
+                    document.getElementById('adminHomeSection').classList.remove('hidden')
                 }
 
                 // Resolve user's smart wallet for alreadyJoined checks
