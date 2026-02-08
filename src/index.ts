@@ -20,7 +20,6 @@ import { supportsExecutionMode } from 'viem/experimental/erc7821'
 import { parseEther, formatEther, parseAbi, parseAbiItem } from 'viem'
 import { getLogs, getBlockNumber } from 'viem/actions'
 import { readFileSync } from 'node:fs'
-import { deflateSync } from 'node:zlib'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 import commands from './commands'
@@ -805,128 +804,10 @@ const app = bot.start()
 app.get('/', (c) => c.html(buildMiniappHtml()))
 app.get('/miniapp.html', (c) => c.html(buildMiniappHtml()))
 
-// ---- PNG image generation (solid color, no external files needed) ----
-
-function createPng(width: number, height: number, r: number, g: number, b: number): Uint8Array {
-    // Build raw RGBA scanlines: filter byte (0) + RGBA per pixel
-    const rowBytes = 1 + width * 4
-    const raw = new Uint8Array(rowBytes * height)
-    for (let y = 0; y < height; y++) {
-        const offset = y * rowBytes
-        raw[offset] = 0 // filter: None
-        for (let x = 0; x < width; x++) {
-            const px = offset + 1 + x * 4
-            raw[px] = r
-            raw[px + 1] = g
-            raw[px + 2] = b
-            raw[px + 3] = 255 // alpha
-        }
-    }
-
-    const compressed = deflateSync(raw)
-
-    // CRC-32 table
-    const crcTable: number[] = []
-    for (let n = 0; n < 256; n++) {
-        let c = n
-        for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1
-        crcTable[n] = c
-    }
-    function crc32(buf: Uint8Array): number {
-        let c = 0xffffffff
-        for (let i = 0; i < buf.length; i++) c = crcTable[(c ^ buf[i]) & 0xff] ^ (c >>> 8)
-        return (c ^ 0xffffffff) >>> 0
-    }
-
-    function chunk(type: string, data: Uint8Array): Uint8Array {
-        const len = data.length
-        const buf = new Uint8Array(12 + len)
-        const view = new DataView(buf.buffer)
-        view.setUint32(0, len)
-        buf[4] = type.charCodeAt(0)
-        buf[5] = type.charCodeAt(1)
-        buf[6] = type.charCodeAt(2)
-        buf[7] = type.charCodeAt(3)
-        buf.set(data, 8)
-        const crcData = new Uint8Array(4 + len)
-        crcData.set(buf.subarray(4, 8 + len))
-        view.setUint32(8 + len, crc32(crcData))
-        return buf
-    }
-
-    // IHDR
-    const ihdr = new Uint8Array(13)
-    const ihdrView = new DataView(ihdr.buffer)
-    ihdrView.setUint32(0, width)
-    ihdrView.setUint32(4, height)
-    ihdr[8] = 8  // bit depth
-    ihdr[9] = 6  // RGBA
-    ihdr[10] = 0 // compression
-    ihdr[11] = 0 // filter
-    ihdr[12] = 0 // interlace
-
-    const signature = new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10])
-    const ihdrChunk = chunk('IHDR', ihdr)
-    const idatChunk = chunk('IDAT', compressed)
-    const iendChunk = chunk('IEND', new Uint8Array(0))
-
-    const png = new Uint8Array(signature.length + ihdrChunk.length + idatChunk.length + iendChunk.length)
-    png.set(signature, 0)
-    png.set(ihdrChunk, signature.length)
-    png.set(idatChunk, signature.length + ihdrChunk.length)
-    png.set(iendChunk, signature.length + ihdrChunk.length + idatChunk.length)
-    return png
-}
-
-// Pre-generate fallback images at startup (purple #7C3AED = rgb(124, 58, 237))
-const FALLBACK_ICON = createPng(512, 512, 124, 58, 237)
-const FALLBACK_IMAGE = createPng(1200, 630, 124, 58, 237)
-const FALLBACK_SPLASH = createPng(200, 200, 124, 58, 237)
-
-// Fetch profile image from river.delivery and cache it
-const RIVER_IMAGE_URL = 'https://river.delivery/user/0xCC8ae8246f6FF472e7CDBa4aA973c2A91ba0C97c/image'
-let cachedProfileImage: { data: Uint8Array; contentType: string } | null = null
-
-async function fetchProfileImage() {
-    try {
-        const res = await fetch(RIVER_IMAGE_URL)
-        if (res.ok) {
-            const buf = await res.arrayBuffer()
-            const contentType = res.headers.get('content-type') || 'image/jpeg'
-            cachedProfileImage = { data: new Uint8Array(buf), contentType }
-            console.log(`[Image] Cached profile image (${cachedProfileImage.data.length} bytes, ${contentType})`)
-        } else {
-            console.warn(`[Image] Failed to fetch profile image: ${res.status}`)
-        }
-    } catch (err) {
-        console.warn('[Image] Error fetching profile image:', err)
-    }
-}
-
-await fetchProfileImage()
-// Refresh the image periodically (every hour)
-setInterval(fetchProfileImage, 60 * 60 * 1000)
-
-// Serve images
-function serveImage(c: any, data: Uint8Array, contentType: string) {
-    c.header('Content-Type', contentType)
-    c.header('Content-Length', data.length.toString())
-    c.header('Cache-Control', 'public, max-age=86400')
-    return c.body(data)
-}
-
-app.get('/icon.png', (c) => {
-    if (cachedProfileImage) return serveImage(c, cachedProfileImage.data, cachedProfileImage.contentType)
-    return serveImage(c, FALLBACK_ICON, 'image/png')
-})
-app.get('/image.png', (c) => {
-    if (cachedProfileImage) return serveImage(c, cachedProfileImage.data, cachedProfileImage.contentType)
-    return serveImage(c, FALLBACK_IMAGE, 'image/png')
-})
-app.get('/splash.png', (c) => {
-    if (cachedProfileImage) return serveImage(c, cachedProfileImage.data, cachedProfileImage.contentType)
-    return serveImage(c, FALLBACK_SPLASH, 'image/png')
-})
+// Serve image routes by redirecting to manifest URLs (sourced from Farcaster hosted manifest)
+app.get('/icon.png', (c) => c.redirect(manifestData.iconUrl, 302))
+app.get('/image.png', (c) => c.redirect(manifestData.imageUrl, 302))
+app.get('/splash.png', (c) => c.redirect(manifestData.splashImageUrl, 302))
 
 // Agent metadata
 app.get('/.well-known/agent-metadata.json', async (c) => {
