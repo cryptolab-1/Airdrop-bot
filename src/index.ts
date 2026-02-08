@@ -51,6 +51,7 @@ import {
     getSpaceName,
     setUserWallet,
     getUserWallet,
+    getUserIdsByWallets,
     deleteAirdrop,
     resetLeaderboard,
     deleteHistoryAirdrops,
@@ -451,8 +452,68 @@ async function getUniqueRecipientAddresses(
         if (seen.has(wallet) || extra.has(wallet)) continue
         seen.add(wallet)
         out.push((addr ?? (uid as Address)) as Address)
+        // Store userId (EOA) → smart wallet mapping for later name resolution
+        if (addr && isEthAddress(uid)) {
+            setUserWallet(uid, wallet)
+        }
     }
     return out
+}
+
+/**
+ * Fetch display names for space members using bot.getStreamView().
+ * Caches resolved names in the participant_names DB table.
+ * spaceStreamId can be a full stream ID or an extracted address —
+ * we try both formats.
+ */
+async function cacheSpaceMemberNames(spaceIdOrAddress: string): Promise<void> {
+    try {
+        // Try to get the stream view — this may take a while for large spaces
+        const streamView = await (bot as any).getStreamView(spaceIdOrAddress)
+        if (!streamView) {
+            console.log(`[Names] No stream view for ${spaceIdOrAddress}`)
+            return
+        }
+        const members = streamView.getMembers()
+        if (!members?.joined) return
+
+        let cached = 0
+        for (const [userId] of members.joined) {
+            if (!userId || !isEthAddress(userId)) continue
+            try {
+                const info = members.memberMetadata.userInfo(userId)
+                const name = info?.displayName || info?.username
+                if (name && !name.startsWith('encrypted:')) {
+                    // Resolve the user's smart wallet and cache the display name
+                    const knownWallet = getUserWallet(userId)
+                    if (knownWallet) {
+                        setParticipantName(knownWallet, name)
+                        cached++
+                    } else {
+                        // Also try to resolve and cache
+                        try {
+                            const smartAccount = await getSmartAccountFromUserId(
+                                bot as AnyBot, { userId: userId as Address }
+                            )
+                            if (smartAccount) {
+                                const wallet = (smartAccount as string).toLowerCase()
+                                setUserWallet(userId, wallet)
+                                setParticipantName(wallet, name)
+                                cached++
+                            }
+                        } catch {
+                            // Can't resolve, skip
+                        }
+                    }
+                }
+            } catch {
+                // Skip members we can't read
+            }
+        }
+        console.log(`[Names] Cached ${cached} display names for space ${spaceIdOrAddress}`)
+    } catch (err) {
+        console.warn(`[Names] Failed to fetch stream view for ${spaceIdOrAddress}:`, err)
+    }
 }
 
 // ---- Distribution ----------------------------------------------------------
@@ -827,7 +888,7 @@ await fetchAndCacheImage()
 
 function serveImage(c: any) {
     if (!cachedImage) return c.redirect(RIVER_IMAGE_URL, 302)
-    return new Response(cachedImage.data.buffer, {
+    return new Response(cachedImage.data as unknown as BodyInit, {
         headers: {
             'Content-Type': cachedImage.contentType,
             'Content-Length': cachedImage.data.length.toString(),
@@ -1046,6 +1107,9 @@ app.get('/api/holders', async (c) => {
         saveSpaceHolders(nftAddress, uniqueRecipients.map(a => a as string))
         console.log(`[Holders] Cached ${uniqueRecipients.length} holders for ${nftAddress}`)
 
+        // Cache member display names in the background
+        cacheSpaceMemberNames(rawSpaceId || nftAddress).catch(() => {})
+
         return c.json({
             count: uniqueRecipients.length,
             nftAddress,
@@ -1150,6 +1214,10 @@ app.post('/api/airdrop', async (c) => {
             }
 
             recipientCount = participants.length
+
+            // Cache display names for space members in the background
+            // (the spaceId from the frontend may be either an address or stream ID)
+            cacheSpaceMemberNames(spaceId || nftAddress).catch(() => {})
         }
         // For 'public' airdrops, participants join later
 
@@ -1598,6 +1666,19 @@ app.get('/api/leaderboard', async (c) => {
         ...topCreators.map(r => r.address),
     ]
     const names = getParticipantNames(allAddresses)
+
+    // For addresses without display names, try to find a short label via reverse wallet lookup
+    const missingAddresses = allAddresses.filter(a => !names.has(a.toLowerCase()))
+    if (missingAddresses.length > 0) {
+        const reverseMap = getUserIdsByWallets(missingAddresses)
+        for (const [wallet, userId] of reverseMap) {
+            if (!names.has(wallet)) {
+                // Use shortened EOA as a fallback display name
+                const short = userId.slice(0, 6) + '...' + userId.slice(-4)
+                names.set(wallet, short)
+            }
+        }
+    }
 
     // Fetch missing space names (for spaces that weren't named yet)
     const enrichedSpaces = await Promise.all(

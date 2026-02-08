@@ -574,6 +574,24 @@ export function getUserWallets(userIds: string[]): Map<string, string> {
     return result
 }
 
+/** Reverse lookup: find userIds (EOAs) for a list of smart wallet addresses */
+export function getUserIdsByWallets(walletAddresses: string[]): Map<string, string> {
+    const result = new Map<string, string>() // wallet → userId
+    if (walletAddresses.length === 0) return result
+    const BATCH = 500
+    for (let i = 0; i < walletAddresses.length; i += BATCH) {
+        const batch = walletAddresses.slice(i, i + BATCH).map(a => a.toLowerCase())
+        const placeholders = batch.map(() => '?').join(',')
+        const rows = db.query(
+            `SELECT user_id, wallet_address FROM user_wallets WHERE wallet_address IN (${placeholders})`,
+        ).all(...batch) as { user_id: string; wallet_address: string }[]
+        for (const row of rows) {
+            result.set(row.wallet_address, row.user_id)
+        }
+    }
+    return result
+}
+
 // ============================================================================
 // Tax holders (persisted, refreshed every 24h)
 // ============================================================================
