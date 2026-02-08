@@ -1119,42 +1119,46 @@
         })
 
         function updatePerPerson() {
-            const amountStr = document.getElementById('amountInput').value.trim()
-            const wei = tokensToWei(amountStr)
-            const type = document.getElementById('airdropTypeSelect').value
-            const label = getTokenLabel()
+            try {
+                const amountStr = document.getElementById('amountInput').value.trim()
+                const wei = tokensToWei(amountStr)
+                const type = document.getElementById('airdropTypeSelect').value
+                const label = getTokenLabel()
 
-            // Tax summary (shown whenever a valid amount is entered)
-            if (wei && BigInt(wei) > 0n && (taxPercent > 0 || adminTaxPercent > 0)) {
-                const { holderTax, adminTax, net } = computeTaxClient(wei)
-                document.getElementById('taxPercentLabel').textContent = taxPercent
-                document.getElementById('taxAmountLabel').textContent = formatTokens(holderTax.toString()) + ' ' + label
+                // Tax summary (shown whenever a valid amount is entered)
+                if (wei && BigInt(wei) > 0n && (taxPercent > 0 || adminTaxPercent > 0)) {
+                    const { holderTax, adminTax, net } = computeTaxClient(wei)
+                    document.getElementById('taxPercentLabel').textContent = taxPercent
+                    document.getElementById('taxAmountLabel').textContent = formatTokens(holderTax.toString()) + ' ' + label
 
-                if (adminTaxEnabled && adminTax > 0n) {
-                    document.getElementById('adminTaxPercentLabel').textContent = adminTaxPercent
-                    document.getElementById('adminTaxAmountLabel').textContent = formatTokens(adminTax.toString()) + ' ' + label
-                    document.getElementById('adminTaxRow').classList.remove('hidden')
+                    if (adminTaxEnabled && adminTax > 0n) {
+                        document.getElementById('adminTaxPercentLabel').textContent = adminTaxPercent
+                        document.getElementById('adminTaxAmountLabel').textContent = formatTokens(adminTax.toString()) + ' ' + label
+                        document.getElementById('adminTaxRow').classList.remove('hidden')
+                    } else {
+                        document.getElementById('adminTaxRow').classList.add('hidden')
+                    }
+
+                    document.getElementById('netAmountLabel').textContent = formatTokens(net.toString()) + ' ' + label
+                    document.getElementById('taxSummary').classList.remove('hidden')
+                    document.getElementById('taxNote').classList.remove('hidden')
+
+                    // Per person (space only)
+                    if (type === 'space' && holderCount > 0) {
+                        const perPerson = net / BigInt(holderCount)
+                        document.getElementById('perPersonAmount').textContent =
+                            formatTokens(perPerson.toString()) + ' ' + label
+                        document.getElementById('perPersonSummary').classList.remove('hidden')
+                    } else {
+                        document.getElementById('perPersonSummary').classList.add('hidden')
+                    }
                 } else {
-                    document.getElementById('adminTaxRow').classList.add('hidden')
-                }
-
-                document.getElementById('netAmountLabel').textContent = formatTokens(net.toString()) + ' ' + label
-                document.getElementById('taxSummary').classList.remove('hidden')
-                document.getElementById('taxNote').classList.remove('hidden')
-
-                // Per person (space only)
-                if (type === 'space' && holderCount > 0) {
-                    const perPerson = net / BigInt(holderCount)
-                    document.getElementById('perPersonAmount').textContent =
-                        formatTokens(perPerson.toString()) + ' ' + label
-                    document.getElementById('perPersonSummary').classList.remove('hidden')
-                } else {
+                    document.getElementById('taxSummary').classList.add('hidden')
+                    document.getElementById('taxNote').classList.add('hidden')
                     document.getElementById('perPersonSummary').classList.add('hidden')
                 }
-            } else {
-                document.getElementById('taxSummary').classList.add('hidden')
-                document.getElementById('taxNote').classList.add('hidden')
-                document.getElementById('perPersonSummary').classList.add('hidden')
+            } catch (err) {
+                console.error('[updatePerPerson] Error:', err)
             }
         }
 
