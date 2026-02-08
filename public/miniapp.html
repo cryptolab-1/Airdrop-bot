@@ -476,7 +476,7 @@
                     </select>
                 </div>
 
-                <!-- Public airdrop: Title & Description -->
+                <!-- Public airdrop: Title, Description, Max Participants -->
                 <div id="publicTitleGroup" class="hidden">
                     <div class="form-group">
                         <label>Title (optional)</label>
@@ -486,6 +486,11 @@
                         <label>Description (optional)</label>
                         <textarea id="airdropDescInput" placeholder="Describe your airdrop..." rows="2" maxlength="500" style="resize:vertical;"></textarea>
                         <div class="hint">If you paste a link, a preview will be shown</div>
+                    </div>
+                    <div class="form-group">
+                        <label>Max Participants (optional)</label>
+                        <input type="number" id="maxParticipantsInput" placeholder="Leave empty for unlimited" min="1" />
+                        <div class="hint">Distribution starts automatically when max is reached</div>
                     </div>
                 </div>
 
@@ -739,6 +744,18 @@
                 <div class="info-row">
                     <span class="info-label">Participants</span>
                     <span class="info-value" id="statusRecipientCount">0</span>
+                </div>
+
+                <!-- Max participants info -->
+                <div class="info-row hidden" id="statusMaxParticipantsRow">
+                    <span class="info-label">Max Participants</span>
+                    <span class="info-value" id="statusMaxParticipants">-</span>
+                </div>
+
+                <!-- Pending actions (creator can fund or cancel) -->
+                <div id="statusPendingSection" class="hidden" style="margin-top:16px;">
+                    <button id="statusFundBtn">Fund This Airdrop</button>
+                    <button id="statusCancelBtn" class="danger" style="margin-top:8px;">Cancel Airdrop</button>
                 </div>
 
                 <!-- Join section (public, funded) -->
@@ -1434,6 +1451,8 @@
                 await ensureTreasuryAddress()
                 const title = document.getElementById('airdropTitleInput').value.trim()
                 const desc = document.getElementById('airdropDescInput').value.trim()
+                const maxPInput = document.getElementById('maxParticipantsInput').value.trim()
+                const maxP = (type === 'public' && maxPInput) ? parseInt(maxPInput, 10) : 0
                 const airdrop = await apiCreateAirdrop(
                     type,
                     wei,
@@ -1443,7 +1462,8 @@
                     context?.user?.displayName || '',
                     getTokenSymbol(),
                     type === 'public' ? title : '',
-                    type === 'public' ? desc : ''
+                    type === 'public' ? desc : '',
+                    maxP > 0 ? maxP : 0
                 )
                 currentAirdrop = airdrop
                 await openDepositScreen(airdrop, amount)
@@ -1469,7 +1489,8 @@
             document.getElementById('depositInteractionSection').classList.remove('hidden')
             document.getElementById('depositWaitingSection').classList.add('hidden')
 
-            const label = getTokenLabel()
+            // Derive label from airdrop data (works even when called from status screen)
+            const label = airdrop.currencySymbol ? ('$' + airdrop.currencySymbol) : getTokenLabel()
             document.getElementById('depositTotal').textContent = humanAmount + ' ' + label
             document.getElementById('depositToken').textContent = label
 
@@ -1707,7 +1728,7 @@
                             <span class="airdrop-card-title">${formatTokens(drop.totalAmount, drop.currencyDecimals ?? 18)} ${drop.currencySymbol ? '$' + drop.currencySymbol : 'tokens'}</span>
                             <span class="status-badge status-${drop.status}">${drop.status.toUpperCase()}</span>
                         </div>
-                        <div class="airdrop-card-detail">${drop.recipientCount} participant${drop.recipientCount !== 1 ? 's' : ''}</div>
+                        <div class="airdrop-card-detail">${drop.recipientCount} participant${drop.recipientCount !== 1 ? 's' : ''}${drop.maxParticipants > 0 ? ' / ' + drop.maxParticipants + ' max' : ''}</div>
                         <div class="airdrop-card-detail">Per person: ${drop.recipientCount > 0 ? formatTokens(drop.amountPerRecipient, drop.currencyDecimals ?? 18) : '—'} ${drop.currencySymbol ? '$' + drop.currencySymbol : 'tokens'}</div>
                         <div class="airdrop-card-detail" style="opacity:0.4;">Created by ${drop.creatorName || shortAddr(drop.creatorAddress)}</div>
                         <div class="airdrop-card-actions">
@@ -1775,6 +1796,22 @@
             badge.textContent = airdrop.status.toUpperCase()
             badge.className = 'status-badge status-' + airdrop.status
 
+            // Title/description
+            const titleEl = document.getElementById('statusTitle')
+            const descEl = document.getElementById('statusDesc')
+            if (airdrop.title) {
+                titleEl.textContent = airdrop.title
+                titleEl.classList.remove('hidden')
+            } else {
+                titleEl.classList.add('hidden')
+            }
+            if (airdrop.description) {
+                descEl.innerHTML = renderDescription(airdrop.description)
+                descEl.classList.remove('hidden')
+            } else {
+                descEl.classList.add('hidden')
+            }
+
             const typeLabel = airdrop.airdropType === 'space' ? 'Space Members' : 'Public'
             document.getElementById('statusType').textContent = typeLabel
             const dec = airdrop.currencyDecimals ?? 18
@@ -1817,7 +1854,8 @@
             const alreadyJoined = airdrop.participants?.some(p =>
                 p.toLowerCase() === userId || (userAddr && p.toLowerCase() === userAddr)
             )
-            if (isPublic && airdrop.status === 'funded' && !alreadyJoined) {
+            const isFull = maxP > 0 && airdrop.recipientCount >= maxP
+            if (isPublic && airdrop.status === 'funded' && !alreadyJoined && !isFull) {
                 joinSection.classList.remove('hidden')
             } else {
                 joinSection.classList.add('hidden')
@@ -1837,6 +1875,23 @@
                 }).join('')
             } else {
                 partSection.classList.add('hidden')
+            }
+
+            // Max participants
+            const maxP = airdrop.maxParticipants || 0
+            if (maxP > 0) {
+                document.getElementById('statusMaxParticipants').textContent = `${airdrop.recipientCount} / ${maxP}`
+                document.getElementById('statusMaxParticipantsRow').classList.remove('hidden')
+            } else {
+                document.getElementById('statusMaxParticipantsRow').classList.add('hidden')
+            }
+
+            // Pending section (creator can fund or cancel)
+            const pendingSection = document.getElementById('statusPendingSection')
+            if (isCreator && airdrop.status === 'pending') {
+                pendingSection.classList.remove('hidden')
+            } else {
+                pendingSection.classList.add('hidden')
             }
 
             // Manage section (creator, public, funded, has participants)
@@ -1902,6 +1957,54 @@
             }
         })
 
+        // Fund from status screen (opens deposit screen)
+        document.getElementById('statusFundBtn').addEventListener('click', async () => {
+            if (!currentAirdrop) return
+            hideError('statusError')
+            const btn = document.getElementById('statusFundBtn')
+            btn.disabled = true
+            btn.textContent = 'Loading...'
+            try {
+                await ensureTreasuryAddress()
+                // Calculate human-readable amount
+                const dec = currentAirdrop.currencyDecimals ?? 18
+                const humanAmount = weiToTokens(currentAirdrop.totalAmount, dec)
+                await openDepositScreen(currentAirdrop, humanAmount)
+            } catch (err) {
+                showError('statusError', err.message)
+            } finally {
+                btn.disabled = false
+                btn.textContent = 'Fund This Airdrop'
+            }
+        })
+
+        // Cancel from status screen
+        document.getElementById('statusCancelBtn').addEventListener('click', async () => {
+            if (!currentAirdrop) return
+            hideError('statusError')
+            const btn = document.getElementById('statusCancelBtn')
+            btn.disabled = true
+            btn.textContent = 'Canceling...'
+            try {
+                const res = await fetch(`/api/airdrop/${currentAirdrop.id}/cancel`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                })
+                if (!res.ok) {
+                    const err = await res.json().catch(() => ({}))
+                    throw new Error(err.error || 'Failed to cancel')
+                }
+                const updated = await res.json()
+                currentAirdrop = updated
+                updateStatusUI(updated)
+            } catch (err) {
+                showError('statusError', err.message)
+            } finally {
+                btn.disabled = false
+                btn.textContent = 'Cancel Airdrop'
+            }
+        })
+
         document.getElementById('statusBackBtn').addEventListener('click', () => {
             showScreen('homeScreen')
         })
@@ -1939,25 +2042,22 @@
         }
 
         function renderDescription(desc) {
-            // Detect URLs and turn them into clickable links with a small preview
-            const urlRegex = /(https?:\/\/[^\s<]+)/g
-            const escaped = escapeHtml(desc)
-            const withLinks = escaped.replace(urlRegex, (url) => {
-                // Extract domain for preview
+            const trimmed = desc.trim()
+
+            // Check if the entire description is a single URL — show a link preview card
+            const singleUrlMatch = trimmed.match(/^(https?:\/\/[^\s<]+)$/)
+            if (singleUrlMatch) {
+                const url = singleUrlMatch[1]
                 let domain = ''
                 try { domain = new URL(url).hostname } catch { domain = url }
-                return `<a href="${url}" target="_blank" rel="noopener">${url}</a>`
-            })
-
-            // If the entire description is a single URL, show a link preview card
-            const trimmed = desc.trim()
-            if (urlRegex.test(trimmed) && trimmed.match(urlRegex)?.length === 1 && trimmed === trimmed.match(urlRegex)[0]) {
-                let domain = ''
-                try { domain = new URL(trimmed).hostname } catch { domain = trimmed }
-                return `<div class="link-preview"><a href="${escapeHtml(trimmed)}" target="_blank" rel="noopener">${escapeHtml(domain)}</a><br/><span style="opacity:0.5; font-size:11px;">${escapeHtml(trimmed)}</span></div>`
+                return `<div class="link-preview"><a href="${escapeHtml(url)}" target="_blank" rel="noopener">${escapeHtml(domain)}</a><br/><span style="opacity:0.5; font-size:11px;">${escapeHtml(url)}</span></div>`
             }
 
-            return withLinks
+            // Otherwise, escape HTML and turn URLs into clickable links
+            const escaped = escapeHtml(desc)
+            return escaped.replace(/(https?:\/\/[^\s<]+)/g, (url) => {
+                return `<a href="${url}" target="_blank" rel="noopener">${url}</a>`
+            })
         }
 
         // ==================================================================

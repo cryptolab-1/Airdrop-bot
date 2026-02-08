@@ -215,6 +215,7 @@ function airdropToResponse(a: Airdrop) {
         txHash: a.distributionTxHash || a.depositTxHash,
         title: a.title || null,
         description: a.description || null,
+        maxParticipants: a.maxParticipants || 0,
         createdAt: a.createdAt,
         mode: a.airdropType === 'space' ? 'fixed' : 'react', // backward compat
     }
@@ -1094,6 +1095,7 @@ app.post('/api/airdrop', async (c) => {
             airdropType, totalAmount, creatorAddress, currency,
             currencySymbol: rawSymbol, spaceId, currencyDecimals: rawDecimals,
             creatorDisplayName, title: rawTitle, description: rawDescription,
+            maxParticipants: rawMaxParticipants,
         } = body
 
         if (!airdropType || !totalAmount || !creatorAddress) {
@@ -1205,6 +1207,9 @@ app.post('/api/airdrop', async (c) => {
             taxHolders,
             title: typeof rawTitle === 'string' ? rawTitle.trim().slice(0, 100) : undefined,
             description: typeof rawDescription === 'string' ? rawDescription.trim().slice(0, 500) : undefined,
+            maxParticipants: (airdropType === 'public' && typeof rawMaxParticipants === 'number' && rawMaxParticipants > 0)
+                ? rawMaxParticipants
+                : 0,
             createdAt: Date.now(),
             updatedAt: Date.now(),
         }
@@ -1381,6 +1386,12 @@ app.post('/api/airdrop/:id/join', async (c) => {
             setParticipantName(walletAddress, displayName)
         }
 
+        // Check max participants
+        const maxP = airdrop.maxParticipants || 0
+        if (maxP > 0 && airdrop.participants.length >= maxP) {
+            return c.json({ error: 'This airdrop has reached the maximum number of participants' }, 400)
+        }
+
         if (!airdrop.participants.includes(walletAddress)) {
             const newParticipants = [...airdrop.participants, walletAddress]
             const newCount = newParticipants.length
@@ -1394,6 +1405,14 @@ app.post('/api/airdrop/:id/join', async (c) => {
                 amountPerRecipient: newAmountPer,
                 updatedAt: Date.now(),
             })
+
+            // Auto-distribute when max participants reached
+            if (maxP > 0 && newCount >= maxP) {
+                console.log(`[AutoDistribute] Max participants (${maxP}) reached for ${airdrop.id}, starting distribution`)
+                updateAirdrop(airdrop.id, { status: 'distributing', updatedAt: Date.now() })
+                const fresh = getAirdrop(airdrop.id)
+                if (fresh) runDistribution(fresh).catch(console.error)
+            }
         }
 
         const updated = getAirdrop(airdrop.id)!

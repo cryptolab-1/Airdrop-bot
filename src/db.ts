@@ -38,6 +38,7 @@ export interface Airdrop {
     adminTaxDistributionTxHash?: string
     title?: string
     description?: string
+    maxParticipants?: number  // 0 or undefined = unlimited
     createdAt: number
     updatedAt: number
 }
@@ -71,6 +72,7 @@ interface AirdropRow {
     admin_tax_distribution_tx_hash: string | null
     title: string | null
     description: string | null
+    max_participants: number | null
     created_at: number
     updated_at: number
 }
@@ -131,6 +133,7 @@ export function initDb(): void {
             admin_tax_distribution_tx_hash TEXT,
             title                    TEXT,
             description              TEXT,
+            max_participants         INTEGER DEFAULT 0,
             created_at               INTEGER NOT NULL,
             updated_at               INTEGER NOT NULL
         )
@@ -153,6 +156,9 @@ export function initDb(): void {
     }
     if (!colNames.has('description')) {
         db.run("ALTER TABLE airdrops ADD COLUMN description TEXT")
+    }
+    if (!colNames.has('max_participants')) {
+        db.run("ALTER TABLE airdrops ADD COLUMN max_participants INTEGER DEFAULT 0")
     }
 
     db.run(`
@@ -224,6 +230,7 @@ function rowToAirdrop(row: AirdropRow): Airdrop {
         adminTaxDistributionTxHash: row.admin_tax_distribution_tx_hash ?? undefined,
         title: row.title ?? undefined,
         description: row.description ?? undefined,
+        maxParticipants: row.max_participants ?? 0,
         createdAt: row.created_at,
         updatedAt: row.updated_at,
     }
@@ -243,7 +250,7 @@ const SAVE_SQL = `
         participants, tax_holders,
         deposit_tx_hash, distribution_tx_hash,
         tax_distribution_tx_hash, admin_tax_distribution_tx_hash,
-        title, description,
+        title, description, max_participants,
         created_at, updated_at
     ) VALUES (
         $id, $creator_address, $airdrop_type, $space_nft_address,
@@ -254,7 +261,7 @@ const SAVE_SQL = `
         $participants, $tax_holders,
         $deposit_tx_hash, $distribution_tx_hash,
         $tax_distribution_tx_hash, $admin_tax_distribution_tx_hash,
-        $title, $description,
+        $title, $description, $max_participants,
         $created_at, $updated_at
     )
 `
@@ -285,6 +292,7 @@ export function saveAirdrop(a: Airdrop): void {
         $admin_tax_distribution_tx_hash: a.adminTaxDistributionTxHash ?? null,
         $title: a.title ?? null,
         $description: a.description ?? null,
+        $max_participants: a.maxParticipants ?? 0,
         $created_at: a.createdAt,
         $updated_at: a.updatedAt,
     })
