@@ -24,6 +24,19 @@ import { deflateSync } from 'node:zlib'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 import commands from './commands'
+import {
+    initDb,
+    saveAirdrop,
+    getAirdrop,
+    updateAirdrop,
+    listPublicAirdrops,
+    listAirdropsByCreator,
+    getAirdropCount,
+    setParticipantName,
+    getParticipantName,
+    getParticipantNames,
+} from './db'
+import type { Airdrop, AirdropStatus } from './db'
 
 // ============================================================================
 // Constants
@@ -76,6 +89,9 @@ const bot = await makeTownsBot(process.env.APP_PRIVATE_DATA!, process.env.JWT_SE
 console.log(`[Bot] Gas wallet: ${bot.viem.account.address}`)
 console.log(`[Bot] Treasury:   ${bot.appAddress}`)
 
+// Initialise persistent SQLite database
+initDb()
+
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = dirname(__filename)
 
@@ -87,34 +103,7 @@ const MINIAPP_URL = process.env.MINIAPP_URL || `${process.env.BASE_URL}/miniapp.
 
 type AnyBot = Bot<BotCommand[]>
 
-type AirdropStatus = 'pending' | 'funded' | 'distributing' | 'completed' | 'cancelled'
-
-interface Airdrop {
-    id: string
-    creatorAddress: string
-    airdropType: 'space' | 'public'
-    spaceNftAddress?: string // The space's membership NFT contract (= spaceId)
-    currency: string // ERC20 token contract address
-    currencySymbol: string // e.g. "TOWNS", "USDC"
-    currencyDecimals: number // Token decimals (default 18)
-    totalAmount: string // gross amount deposited
-    taxPercent: number // e.g. 2 means 2%
-    taxAmount: string // wei taken as tax
-    netAmount: string // totalAmount - taxAmount (distributed to recipients)
-    amountPerRecipient: string
-    recipientCount: number
-    status: AirdropStatus
-    participants: string[]
-    taxHolders: string[] // Pre-fetched tax recipients (town members)
-    depositTxHash?: string
-    distributionTxHash?: string
-    taxDistributionTxHash?: string
-    createdAt: number
-    updatedAt: number
-}
-
-// In-memory store (use a database in production)
-const airdrops = new Map<string, Airdrop>()
+// Types are now imported from ./db
 
 // ============================================================================
 // Helpers (NFT holders, distribution, utils)
@@ -170,10 +159,11 @@ function computeTax(totalWei: bigint): { taxAmount: bigint; netAmount: bigint } 
 }
 
 function airdropToResponse(a: Airdrop) {
+    const namesMap = getParticipantNames([a.creatorAddress, ...a.participants])
     return {
         id: a.id,
         creatorAddress: a.creatorAddress,
-        creatorName: participantNames.get(a.creatorAddress.toLowerCase()) || null,
+        creatorName: namesMap.get(a.creatorAddress.toLowerCase()) || null,
         airdropType: a.airdropType,
         spaceNftAddress: a.spaceNftAddress || null,
         currency: a.currency,
@@ -188,7 +178,7 @@ function airdropToResponse(a: Airdrop) {
         status: a.status,
         participants: a.participants,
         participantNames: Object.fromEntries(
-            a.participants.map(p => [p, participantNames.get(p) || null])
+            a.participants.map(p => [p, namesMap.get(p.toLowerCase()) || null])
         ),
         taxHolderCount: a.taxHolders.length,
         txHash: a.distributionTxHash || a.depositTxHash,
@@ -441,13 +431,12 @@ async function runDistribution(airdrop: Airdrop) {
     const result = await runBotDistribution(recipients, amountPer, netRaw, botAddress, tokenAddress)
 
     if (!result.ok) {
-        airdrop.status = 'funded'
         console.error('[Distribution] Main distribution failed:', result.error)
-        airdrop.updatedAt = Date.now()
+        updateAirdrop(airdrop.id, { status: 'funded', updatedAt: Date.now() })
         return
     }
 
-    airdrop.distributionTxHash = result.txHash
+    updateAirdrop(airdrop.id, { distributionTxHash: result.txHash, updatedAt: Date.now() })
 
     // 2. Distribute tax to town members
     // Use pre-fetched holders from airdrop, fall back to cached holders
@@ -469,7 +458,7 @@ async function runDistribution(airdrop: Airdrop) {
                     tokenAddress,
                 )
                 if (taxResult.ok) {
-                    airdrop.taxDistributionTxHash = taxResult.txHash
+                    updateAirdrop(airdrop.id, { taxDistributionTxHash: taxResult.txHash, updatedAt: Date.now() })
                     console.log(`[Tax] Distributed to ${taxRecipients.length} town members (tx: ${taxResult.txHash})`)
                 } else {
                     console.error('[Tax] Tax distribution failed:', taxResult.error)
@@ -482,8 +471,7 @@ async function runDistribution(airdrop: Airdrop) {
         console.warn('[Tax] No tax holders available (pre-fetched or cached), skipping tax distribution')
     }
 
-    airdrop.status = 'completed'
-    airdrop.updatedAt = Date.now()
+    updateAirdrop(airdrop.id, { status: 'completed', updatedAt: Date.now() })
 }
 
 // ============================================================================
@@ -565,7 +553,7 @@ bot.onInteractionResponse(async (handler, event) => {
         }
 
         const airdropId = requestId.replace('deposit-', '')
-        const airdrop = airdrops.get(airdropId)
+        const airdrop = getAirdrop(airdropId)
         if (!airdrop) {
             console.warn('[InteractionResponse] Airdrop not found:', airdropId)
             return
@@ -589,17 +577,16 @@ bot.onInteractionResponse(async (handler, event) => {
         }
 
         // Mark as funded
-        airdrop.depositTxHash = txHash
-        airdrop.status = 'funded'
-        airdrop.updatedAt = Date.now()
+        updateAirdrop(airdropId, { depositTxHash: txHash, status: 'funded', updatedAt: Date.now() })
         console.log('[InteractionResponse] Deposit confirmed for', airdropId)
 
         // Space airdrops auto-distribute
         if (airdrop.airdropType === 'space' && airdrop.participants.length > 0) {
-            airdrop.status = 'distributing'
-            airdrop.updatedAt = Date.now()
+            updateAirdrop(airdropId, { status: 'distributing', updatedAt: Date.now() })
             await handler.sendMessage(event.channelId, `Deposit confirmed! Distributing to ${airdrop.participants.length} recipients...`)
-            runDistribution(airdrop).catch(console.error)
+            // Re-read the latest state for distribution
+            const fresh = getAirdrop(airdropId)
+            if (fresh) runDistribution(fresh).catch(console.error)
         } else if (airdrop.airdropType === 'public') {
             await handler.sendMessage(event.channelId, 'Deposit confirmed! Your public airdrop is now live.')
         }
@@ -1133,11 +1120,11 @@ app.post('/api/airdrop', async (c) => {
             updatedAt: Date.now(),
         }
 
-        airdrops.set(airdrop.id, airdrop)
+        saveAirdrop(airdrop)
 
         // Store creator display name
         if (creatorDisplayName) {
-            participantNames.set(creatorAddress.toLowerCase(), creatorDisplayName)
+            setParticipantName(creatorAddress, creatorDisplayName)
         }
 
         return c.json(airdropToResponse(airdrop))
@@ -1149,7 +1136,7 @@ app.post('/api/airdrop', async (c) => {
 
 // Get airdrop by ID
 app.get('/api/airdrop/:id', (c) => {
-    const airdrop = airdrops.get(c.req.param('id'))
+    const airdrop = getAirdrop(c.req.param('id'))
     if (!airdrop) {
         return c.json({ error: 'Airdrop not found' }, 404)
     }
@@ -1158,7 +1145,7 @@ app.get('/api/airdrop/:id', (c) => {
 
 // Request deposit via Towns interaction (sends tx prompt to user in channel)
 app.post('/api/airdrop/:id/request-deposit', async (c) => {
-    const airdrop = airdrops.get(c.req.param('id'))
+    const airdrop = getAirdrop(c.req.param('id'))
     if (!airdrop) {
         return c.json({ error: 'Airdrop not found' }, 404)
     }
@@ -1226,7 +1213,7 @@ app.post('/api/airdrop/:id/request-deposit', async (c) => {
 
 // Confirm deposit (manual tx hash fallback)
 app.post('/api/airdrop/:id/confirm-deposit', async (c) => {
-    const airdrop = airdrops.get(c.req.param('id'))
+    const airdrop = getAirdrop(c.req.param('id'))
     if (!airdrop) {
         return c.json({ error: 'Airdrop not found' }, 404)
     }
@@ -1247,17 +1234,17 @@ app.post('/api/airdrop/:id/confirm-deposit', async (c) => {
             return c.json({ error: 'Transaction failed on-chain' }, 400)
         }
 
-        airdrop.depositTxHash = txHash
-        airdrop.status = 'funded'
-        airdrop.updatedAt = Date.now()
+        updateAirdrop(airdrop.id, { depositTxHash: txHash, status: 'funded', updatedAt: Date.now() })
 
         // Space airdrops auto-distribute once funded
         if (airdrop.airdropType === 'space' && airdrop.participants.length > 0) {
-            airdrop.status = 'distributing'
-            runDistribution(airdrop).catch(console.error)
+            updateAirdrop(airdrop.id, { status: 'distributing', updatedAt: Date.now() })
+            const fresh = getAirdrop(airdrop.id)
+            if (fresh) runDistribution(fresh).catch(console.error)
         }
 
-        return c.json(airdropToResponse(airdrop))
+        const updated = getAirdrop(airdrop.id)!
+        return c.json(airdropToResponse(updated))
     } catch (err) {
         console.error('Failed to confirm deposit:', err)
         return c.json({ error: 'Failed to confirm deposit' }, 500)
@@ -1265,11 +1252,8 @@ app.post('/api/airdrop/:id/confirm-deposit', async (c) => {
 })
 
 // Join airdrop (public only)
-// Stores mapping of wallet → display name for UI
-const participantNames = new Map<string, string>() // walletAddress → displayName
-
 app.post('/api/airdrop/:id/join', async (c) => {
-    const airdrop = airdrops.get(c.req.param('id'))
+    const airdrop = getAirdrop(c.req.param('id'))
     if (!airdrop) {
         return c.json({ error: 'Airdrop not found' }, 404)
     }
@@ -1305,22 +1289,26 @@ app.post('/api/airdrop/:id/join', async (c) => {
 
         // Store display name
         if (displayName) {
-            participantNames.set(walletAddress, displayName)
+            setParticipantName(walletAddress, displayName)
         }
 
         if (!airdrop.participants.includes(walletAddress)) {
-            airdrop.participants.push(walletAddress)
-            airdrop.recipientCount = airdrop.participants.length
+            const newParticipants = [...airdrop.participants, walletAddress]
+            const newCount = newParticipants.length
 
             // Recalculate per-recipient using net amount (after tax)
             const net = BigInt(airdrop.netAmount)
-            airdrop.amountPerRecipient = (
-                net / BigInt(airdrop.recipientCount)
-            ).toString()
-            airdrop.updatedAt = Date.now()
+            const newAmountPer = (net / BigInt(newCount)).toString()
+
+            updateAirdrop(airdrop.id, {
+                participants: newParticipants,
+                amountPerRecipient: newAmountPer,
+                updatedAt: Date.now(),
+            })
         }
 
-        return c.json(airdropToResponse(airdrop))
+        const updated = getAirdrop(airdrop.id)!
+        return c.json(airdropToResponse(updated))
     } catch (err) {
         console.error('Failed to join airdrop:', err)
         return c.json({ error: 'Failed to join airdrop' }, 500)
@@ -1329,7 +1317,7 @@ app.post('/api/airdrop/:id/join', async (c) => {
 
 // Launch airdrop (react mode)
 app.post('/api/airdrop/:id/launch', async (c) => {
-    const airdrop = airdrops.get(c.req.param('id'))
+    const airdrop = getAirdrop(c.req.param('id'))
     if (!airdrop) {
         return c.json({ error: 'Airdrop not found' }, 404)
     }
@@ -1342,17 +1330,17 @@ app.post('/api/airdrop/:id/launch', async (c) => {
         return c.json({ error: 'No participants to distribute to' }, 400)
     }
 
-    airdrop.status = 'distributing'
-    airdrop.updatedAt = Date.now()
+    updateAirdrop(airdrop.id, { status: 'distributing', updatedAt: Date.now() })
 
-    runDistribution(airdrop).catch(console.error)
+    const fresh = getAirdrop(airdrop.id)!
+    runDistribution(fresh).catch(console.error)
 
-    return c.json(airdropToResponse(airdrop))
+    return c.json(airdropToResponse(fresh))
 })
 
 // Cancel airdrop
 app.post('/api/airdrop/:id/cancel', async (c) => {
-    const airdrop = airdrops.get(c.req.param('id'))
+    const airdrop = getAirdrop(c.req.param('id'))
     if (!airdrop) {
         return c.json({ error: 'Airdrop not found' }, 404)
     }
@@ -1361,28 +1349,22 @@ app.post('/api/airdrop/:id/cancel', async (c) => {
         return c.json({ error: 'Cannot cancel airdrop in current state' }, 400)
     }
 
-    airdrop.status = 'cancelled'
-    airdrop.updatedAt = Date.now()
+    updateAirdrop(airdrop.id, { status: 'cancelled', updatedAt: Date.now() })
 
-    return c.json(airdropToResponse(airdrop))
+    const updated = getAirdrop(airdrop.id)!
+    return c.json(airdropToResponse(updated))
 })
 
 // List public airdrops (joinable)
 app.get('/api/public-airdrops', (c) => {
-    const publicDrops = [...airdrops.values()]
-        .filter((a) => a.airdropType === 'public' && a.status !== 'cancelled')
-        .sort((a, b) => b.createdAt - a.createdAt)
-        .map(airdropToResponse)
+    const publicDrops = listPublicAirdrops().map(airdropToResponse)
     return c.json(publicDrops)
 })
 
 // List airdrops created by a specific user
 app.get('/api/my-airdrops/:address', (c) => {
-    const addr = c.req.param('address').toLowerCase()
-    const myDrops = [...airdrops.values()]
-        .filter((a) => a.creatorAddress.toLowerCase() === addr)
-        .sort((a, b) => b.createdAt - a.createdAt)
-        .map(airdropToResponse)
+    const addr = c.req.param('address')
+    const myDrops = listAirdropsByCreator(addr).map(airdropToResponse)
     return c.json(myDrops)
 })
 
@@ -1390,7 +1372,7 @@ app.get('/api/my-airdrops/:address', (c) => {
 app.get('/health', (c) => {
     return c.json({
         status: 'ok',
-        airdrops: airdrops.size,
+        airdrops: getAirdropCount(),
     })
 })
 

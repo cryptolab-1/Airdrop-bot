@@ -29,6 +29,9 @@ coverage/
 .vscode/
 .idea/
 
+# Local database
+data/
+
 # OS
 .DS_Store
 Thumbs.db
