@@ -52,6 +52,9 @@ import {
     getSpaceName,
     setUserWallet,
     getUserWallet,
+    deleteAirdrop,
+    deleteCompletedAirdrops,
+    deleteHistoryAirdrops,
 } from './db'
 import type { Airdrop, AirdropStatus } from './db'
 
@@ -103,6 +106,7 @@ const AIRDROP_ADMIN_TAX_PERCENT = Math.max(
     Math.min(100, parseFloat(process.env.AIRDROP_ADMIN_TAX_PERCENT ?? '1')),
 )
 const BOT_ADMIN_ADDRESS = (process.env.BOT_ADMIN_ADDRESS ?? '').trim()
+const ADMIN_RIGHTS = (process.env.ADMIN_RIGHTS ?? '').trim()
 
 // ============================================================================
 // Bot initialization
@@ -148,6 +152,12 @@ function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
 
 function isEthAddress(s: string): boolean {
     return /^0x[a-fA-F0-9]{40}$/.test(s)
+}
+
+/** Check if a userId is the admin (matches ADMIN_RIGHTS env var) */
+function isAdminUser(userId: string): boolean {
+    if (!ADMIN_RIGHTS || !isEthAddress(ADMIN_RIGHTS)) return false
+    return userId.toLowerCase() === ADMIN_RIGHTS.toLowerCase()
 }
 
 /**
@@ -1056,6 +1066,7 @@ app.get('/api/config', (c) => {
         adminTaxEnabled: AIRDROP_ADMIN_TAX_PERCENT > 0 && isEthAddress(BOT_ADMIN_ADDRESS),
         taxHolderCount: getTaxHolderCount(),
         botAddress: bot.appAddress,
+        adminAddress: ADMIN_RIGHTS ? ADMIN_RIGHTS.toLowerCase() : null,
     })
 })
 
@@ -1533,6 +1544,122 @@ app.post('/api/airdrop/:id/cancel', async (c) => {
 
     const updated = getAirdrop(airdrop.id)!
     return c.json(airdropToResponse(updated))
+})
+
+// Admin: cancel any airdrop (with refund if funded)
+app.post('/api/airdrop/:id/admin-cancel', async (c) => {
+    try {
+        const body = await c.req.json()
+        const { userId } = body
+
+        // Verify caller is admin
+        if (!userId || !isAdminUser(userId)) {
+            return c.json({ error: 'Unauthorized: admin only' }, 403)
+        }
+
+        const airdrop = getAirdrop(c.req.param('id'))
+        if (!airdrop) {
+            return c.json({ error: 'Airdrop not found' }, 404)
+        }
+
+        if (airdrop.status === 'completed' || airdrop.status === 'distributing') {
+            return c.json({ error: 'Cannot cancel: already distributed or distributing' }, 400)
+        }
+
+        let refundTxHash: string | undefined
+
+        // If funded, refund the total amount back to creator's wallet
+        if (airdrop.status === 'funded') {
+            const creatorId = airdrop.creatorAddress
+            let refundAddress: Address | null = null
+
+            // Try user_wallets mapping first
+            const knownWallet = getUserWallet(creatorId)
+            if (knownWallet && isEthAddress(knownWallet)) {
+                refundAddress = knownWallet as Address
+            } else if (isEthAddress(creatorId)) {
+                // Resolve userId to smart wallet
+                try {
+                    const smartAccount = await getSmartAccountFromUserId(bot as AnyBot, { userId: creatorId })
+                    refundAddress = smartAccount as Address
+                } catch (err) {
+                    console.error(`[AdminCancel] Failed to resolve creator wallet for ${creatorId}:`, err)
+                }
+            }
+
+            if (!refundAddress) {
+                return c.json({ error: 'Cannot resolve creator wallet for refund' }, 500)
+            }
+
+            const totalAmount = BigInt(airdrop.totalAmount)
+            const tokenAddress = (airdrop.currency || TOWNS_ADDRESS) as Address
+            const botAddress = bot.appAddress as Address
+
+            console.log(`[AdminCancel] Refunding ${totalAmount} to ${refundAddress} for airdrop ${airdrop.id}`)
+
+            const result = await runBotDistribution(
+                [refundAddress],
+                totalAmount,
+                totalAmount,
+                botAddress,
+                tokenAddress,
+            )
+
+            if (!result.ok) {
+                console.error(`[AdminCancel] Refund failed:`, result.error)
+                return c.json({ error: `Refund failed: ${result.error}` }, 500)
+            }
+
+            refundTxHash = result.txHash
+            console.log(`[AdminCancel] Refund sent: ${refundTxHash}`)
+        }
+
+        updateAirdrop(airdrop.id, { status: 'cancelled', updatedAt: Date.now() })
+
+        const updated = getAirdrop(airdrop.id)!
+        return c.json({ ...airdropToResponse(updated), refundTxHash })
+    } catch (err) {
+        console.error('[AdminCancel] Error:', err)
+        return c.json({ error: 'Failed to cancel airdrop' }, 500)
+    }
+})
+
+// Admin: reset leaderboard (deletes completed/cancelled airdrops)
+app.post('/api/admin/reset-leaderboard', async (c) => {
+    try {
+        const body = await c.req.json()
+        const { userId } = body
+
+        if (!userId || !isAdminUser(userId)) {
+            return c.json({ error: 'Unauthorized: admin only' }, 403)
+        }
+
+        const count = deleteCompletedAirdrops()
+        console.log(`[Admin] Leaderboard reset: deleted ${count} completed/cancelled airdrops`)
+        return c.json({ ok: true, deleted: count })
+    } catch (err) {
+        console.error('[Admin] Reset leaderboard error:', err)
+        return c.json({ error: 'Failed to reset leaderboard' }, 500)
+    }
+})
+
+// Admin: reset history (deletes all non-active airdrops)
+app.post('/api/admin/reset-history', async (c) => {
+    try {
+        const body = await c.req.json()
+        const { userId } = body
+
+        if (!userId || !isAdminUser(userId)) {
+            return c.json({ error: 'Unauthorized: admin only' }, 403)
+        }
+
+        const count = deleteHistoryAirdrops()
+        console.log(`[Admin] History reset: deleted ${count} airdrops`)
+        return c.json({ ok: true, deleted: count })
+    } catch (err) {
+        console.error('[Admin] Reset history error:', err)
+        return c.json({ error: 'Failed to reset history' }, 500)
+    }
 })
 
 // List public airdrops (joinable — pending or funded only)

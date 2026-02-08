@@ -786,6 +786,11 @@
                     <div class="hint" style="text-align:center;">Launch the distribution to all joined participants</div>
                 </div>
 
+                <!-- Admin cancel (visible to admin only) -->
+                <div id="statusAdminSection" class="hidden" style="margin-top:16px;">
+                    <button class="danger" id="statusAdminCancelBtn">Admin: Cancel &amp; Refund</button>
+                </div>
+
                 <!-- Result -->
                 <div id="statusResultSection" class="hidden" style="margin-top:16px;">
                     <div id="statusResultMessage"></div>
@@ -828,6 +833,11 @@
                 </div>
 
                 <div id="leaderboardError" class="error hidden"></div>
+
+                <div id="leaderboardAdminSection" class="hidden" style="margin-top:16px;">
+                    <div class="divider"></div>
+                    <button class="danger sm" id="resetLeaderboardBtn">Reset Leaderboard</button>
+                </div>
             </div>
         </div>
 
@@ -846,6 +856,11 @@
                 <div id="historyEmpty" class="empty-state hidden">No airdrop history yet.</div>
 
                 <div id="historyError" class="error hidden"></div>
+
+                <div id="historyAdminSection" class="hidden" style="margin-top:16px;">
+                    <div class="divider"></div>
+                    <button class="danger sm" id="resetHistoryBtn">Reset History</button>
+                </div>
             </div>
         </div>
 
@@ -872,6 +887,8 @@
         let taxEnabled = false
         let adminTaxEnabled = false
         let resolvedUserWallet = '' // smart wallet resolved from userId
+        let isAdmin = false // whether current user is the bot admin
+        let adminAddress = '' // bot admin address
 
         // Towns token default address
         const TOWNS_ADDRESS = '0x00000000A22C618fd6b4D7E9A335C4B96B189a38'
@@ -1090,6 +1107,9 @@
                 if (data.taxHolderCount > 0) {
                     taxHolderCount = data.taxHolderCount
                     document.getElementById('taxMemberCount').textContent = taxHolderCount
+                }
+                if (data.adminAddress) {
+                    adminAddress = data.adminAddress.toLowerCase()
                 }
             } catch { /* use defaults */ }
         }
@@ -1797,6 +1817,7 @@
                             ${alreadyJoined ? `<button class="sm joined" disabled>&#10003; Joined</button>` : ''}
                             ${isCreator ? `<button class="sm secondary" onclick="managePublicDrop('${drop.id}')">Manage</button>` : ''}
                             <button class="sm secondary" onclick="viewDrop('${drop.id}')">View</button>
+                            ${isAdmin && !isCreator ? `<button class="sm danger" onclick="adminCancelDrop('${drop.id}')">Cancel</button>` : ''}
                         </div>
                     `
                     listEl.appendChild(card)
@@ -1837,6 +1858,28 @@
                 const drop = await apiGetAirdrop(id)
                 currentAirdrop = drop
                 openStatusScreen(drop)
+            } catch (err) {
+                alert(err.message)
+            }
+        }
+
+        window.adminCancelDrop = async function(id) {
+            if (!confirm('Admin: Cancel this airdrop? Funded airdrops will be refunded to the creator.')) return
+            try {
+                const userId = context?.towns?.user?.userId || ''
+                const res = await fetch(`/api/airdrop/${id}/admin-cancel`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ userId })
+                })
+                const data = await res.json()
+                if (!res.ok) throw new Error(data.error || 'Failed to cancel')
+                if (data.refundTxHash) {
+                    alert(`Airdrop cancelled. Refund tx: ${data.refundTxHash}`)
+                } else {
+                    alert('Airdrop cancelled.')
+                }
+                loadPublicAirdrops()
             } catch (err) {
                 alert(err.message)
             }
@@ -2009,6 +2052,18 @@
                 manageSection.classList.add('hidden')
             }
 
+            // Admin cancel section (admin, not completed/distributing)
+            const adminSection = document.getElementById('statusAdminSection')
+            if (isAdmin && !isCreator && airdrop.status !== 'completed' && airdrop.status !== 'distributing' && airdrop.status !== 'cancelled') {
+                adminSection.classList.remove('hidden')
+                const acBtn = document.getElementById('statusAdminCancelBtn')
+                acBtn.textContent = airdrop.status === 'funded'
+                    ? 'Admin: Cancel & Refund'
+                    : 'Admin: Cancel'
+            } else {
+                adminSection.classList.add('hidden')
+            }
+
             // Result section
             const resultSection = document.getElementById('statusResultSection')
             const resultMsg = document.getElementById('statusResultMessage')
@@ -2118,6 +2173,38 @@
             }
         })
 
+        // Admin cancel from status screen
+        document.getElementById('statusAdminCancelBtn').addEventListener('click', async () => {
+            if (!currentAirdrop) return
+            if (!confirm('Admin: Cancel this airdrop? Funded airdrops will be refunded.')) return
+            hideError('statusError')
+            const btn = document.getElementById('statusAdminCancelBtn')
+            btn.disabled = true
+            btn.textContent = currentAirdrop.status === 'funded' ? 'Refunding...' : 'Canceling...'
+            try {
+                const userId = context?.towns?.user?.userId || ''
+                const res = await fetch(`/api/airdrop/${currentAirdrop.id}/admin-cancel`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ userId })
+                })
+                const data = await res.json()
+                if (!res.ok) throw new Error(data.error || 'Failed to cancel')
+                currentAirdrop = data
+                updateStatusUI(data)
+                if (data.refundTxHash) {
+                    document.getElementById('statusResultSection').classList.remove('hidden')
+                    document.getElementById('statusResultMessage').innerHTML =
+                        `<div class="success">Cancelled & refunded. <a href="https://basescan.org/tx/${data.refundTxHash}" target="_blank">View tx</a></div>`
+                }
+            } catch (err) {
+                showError('statusError', err.message)
+            } finally {
+                btn.disabled = false
+                btn.textContent = 'Admin: Cancel & Refund'
+            }
+        })
+
         document.getElementById('statusBackBtn').addEventListener('click', () => {
             goBack()
         })
@@ -2209,6 +2296,11 @@
                     const name = item.spaceName || shortAddr(item.spaceNftAddress)
                     return `${name} <span class="leaderboard-stat">${item.count} airdrop${item.count !== 1 ? 's' : ''}</span>`
                 })
+
+                // Show admin reset button
+                if (isAdmin) {
+                    document.getElementById('leaderboardAdminSection').classList.remove('hidden')
+                }
             } catch (err) {
                 loadingEl.classList.add('hidden')
                 showError('leaderboardError', err.message)
@@ -2294,11 +2386,67 @@
                     `
                     listEl.appendChild(card)
                 })
+
+                // Show admin reset button
+                if (isAdmin) {
+                    document.getElementById('historyAdminSection').classList.remove('hidden')
+                }
             } catch (err) {
                 loadingEl.classList.add('hidden')
                 showError('historyError', err.message)
             }
         }
+
+        // ==================================================================
+        // ADMIN RESET HANDLERS
+        // ==================================================================
+        document.getElementById('resetLeaderboardBtn').addEventListener('click', async () => {
+            if (!confirm('Admin: Reset the entire leaderboard? This deletes all completed/cancelled airdrops.')) return
+            const btn = document.getElementById('resetLeaderboardBtn')
+            btn.disabled = true
+            btn.textContent = 'Resetting...'
+            try {
+                const userId = context?.towns?.user?.userId || ''
+                const res = await fetch('/api/admin/reset-leaderboard', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ userId })
+                })
+                const data = await res.json()
+                if (!res.ok) throw new Error(data.error || 'Failed to reset')
+                alert(`Leaderboard reset. ${data.deleted} entries removed.`)
+                loadLeaderboard()
+            } catch (err) {
+                alert(err.message)
+            } finally {
+                btn.disabled = false
+                btn.textContent = 'Reset Leaderboard'
+            }
+        })
+
+        document.getElementById('resetHistoryBtn').addEventListener('click', async () => {
+            if (!confirm('Admin: Clear all airdrop history? This cannot be undone.')) return
+            const btn = document.getElementById('resetHistoryBtn')
+            btn.disabled = true
+            btn.textContent = 'Resetting...'
+            try {
+                const userId = context?.towns?.user?.userId || ''
+                const res = await fetch('/api/admin/reset-history', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ userId })
+                })
+                const data = await res.json()
+                if (!res.ok) throw new Error(data.error || 'Failed to reset')
+                alert(`History cleared. ${data.deleted} entries removed.`)
+                loadHistory()
+            } catch (err) {
+                alert(err.message)
+            } finally {
+                btn.disabled = false
+                btn.textContent = 'Reset History'
+            }
+        })
 
         // ==================================================================
         // INIT
@@ -2311,8 +2459,13 @@
                     apiFetchConfig(),
                 ])
 
-                // Resolve user's smart wallet for alreadyJoined checks
+                // Check if user is admin
                 const userId = context?.towns?.user?.userId || ''
+                if (adminAddress && userId && userId.toLowerCase() === adminAddress) {
+                    isAdmin = true
+                }
+
+                // Resolve user's smart wallet for alreadyJoined checks
                 const userAddr = context?.towns?.user?.address || ''
                 if (userId) {
                     try {

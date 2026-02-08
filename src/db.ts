@@ -382,6 +382,23 @@ export function getAirdropCount(): number {
     return row.cnt
 }
 
+/** Delete an airdrop by ID */
+export function deleteAirdrop(id: string): void {
+    db.run('DELETE FROM airdrops WHERE id = $id', { $id: id })
+}
+
+/** Delete all completed/cancelled airdrops (resets leaderboard & history) */
+export function deleteCompletedAirdrops(): number {
+    const result = db.run("DELETE FROM airdrops WHERE status IN ('completed','cancelled')")
+    return result.changes
+}
+
+/** Delete all airdrops in history view (everything except public pending/funded) */
+export function deleteHistoryAirdrops(): number {
+    const result = db.run("DELETE FROM airdrops WHERE NOT (airdrop_type = 'public' AND status IN ('pending','funded'))")
+    return result.changes
+}
+
 // ============================================================================
 // Leaderboard queries
 // ============================================================================
