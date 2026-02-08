@@ -633,7 +633,7 @@ let manifestData: ManifestData = {
     iconUrl: 'https://airdrop-bot-tvql.onrender.com/icon.png',
     imageUrl: 'https://airdrop-bot-tvql.onrender.com/image.png',
     buttonTitle: 'Launch Airdrop App',
-    splashImageUrl: 'https://airdrop-bot-tvql.onrender.com/splash.png',
+    splashImageUrl: 'https://airdrop-bot-tvql.onrender.com/icon.png',
     splashBackgroundColor: '#7C3AED',
 }
 
