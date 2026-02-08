@@ -507,6 +507,10 @@
                         <span class="spinner-sm"></span> Fetching NFT Holders...
                     </div>
                     <div id="holderResult" class="hidden">
+                        <div class="info-row hidden" id="holderNameRow">
+                            <span class="info-label">Space</span>
+                            <span class="info-value" id="holderSpaceName" style="font-weight:700; color:#e0d4f5;">-</span>
+                        </div>
                         <div class="info-row" id="holderNftRow">
                             <span class="info-label">Space Contract</span>
                             <span class="info-value" id="holderNftAddress" style="font-size:11px; font-family:'Monaco','Courier New',monospace; word-break:break-all;">-</span>
@@ -1229,6 +1233,14 @@
                     taxHolderCount = data.taxHolderCount || 0
                     botTreasuryAddress = data.botAddress || ''
 
+                    // Show space name
+                    if (data.spaceName) {
+                        document.getElementById('holderSpaceName').textContent = data.spaceName
+                        document.getElementById('holderNameRow').classList.remove('hidden')
+                    } else {
+                        document.getElementById('holderNameRow').classList.add('hidden')
+                    }
+
                     // Show the NFT contract address
                     const nftAddr = data.nftAddress || getSpaceAddress() || ''
                     if (nftAddr) {
@@ -1840,7 +1852,9 @@
                 descEl.classList.add('hidden')
             }
 
-            const typeLabel = airdrop.airdropType === 'space' ? 'Space Members' : 'Public'
+            const typeLabel = airdrop.airdropType === 'space'
+                ? (airdrop.spaceName ? airdrop.spaceName + ' Members' : 'Space Members')
+                : 'Public'
             document.getElementById('statusType').textContent = typeLabel
             const dec = airdrop.currencyDecimals ?? 18
             const sym = airdrop.currencySymbol ? '$' + airdrop.currencySymbol : 'tokens'
@@ -2134,7 +2148,8 @@
 
                 // Render spaces
                 renderLeaderboardList('lbSpaces', 'lbSpacesEmpty', data.topSpaces, (item) => {
-                    return `${shortAddr(item.spaceNftAddress)} <span class="leaderboard-stat">${item.count} airdrop${item.count !== 1 ? 's' : ''}</span>`
+                    const name = item.spaceName || shortAddr(item.spaceNftAddress)
+                    return `${name} <span class="leaderboard-stat">${item.count} airdrop${item.count !== 1 ? 's' : ''}</span>`
                 })
             } catch (err) {
                 loadingEl.classList.add('hidden')
@@ -2213,7 +2228,7 @@
                             <span class="airdrop-card-title">${formatTokens(drop.totalAmount, dec)} ${sym}</span>
                             <span class="status-badge status-${drop.status}">${drop.status.toUpperCase()}</span>
                         </div>
-                        <div class="airdrop-card-detail">${drop.airdropType === 'space' ? 'Space Members' : 'Public'} &middot; ${drop.recipientCount} recipient${drop.recipientCount !== 1 ? 's' : ''}</div>
+                        <div class="airdrop-card-detail">${drop.airdropType === 'space' ? (drop.spaceName ? drop.spaceName + ' Members' : 'Space Members') : 'Public'} &middot; ${drop.recipientCount} recipient${drop.recipientCount !== 1 ? 's' : ''}</div>
                         <div class="airdrop-card-detail" style="opacity:0.4;">By ${drop.creatorName || shortAddr(drop.creatorAddress)} &middot; ${date}</div>
                         <div class="airdrop-card-actions">
                             <button class="sm secondary" onclick="viewDrop('${drop.id}')">View Details</button>

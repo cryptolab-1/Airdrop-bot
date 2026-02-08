@@ -48,6 +48,8 @@ import {
     getTopRecipients,
     getTopCreators,
     getTopSpaces,
+    saveSpaceName,
+    getSpaceName,
 } from './db'
 import type { Airdrop, AirdropStatus } from './db'
 
@@ -62,6 +64,7 @@ const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000' as Address
 const ERC721_HOLDERS_ABI = parseAbi([
     'function totalSupply() view returns (uint256)',
     'function ownerOf(uint256 tokenId) view returns (address)',
+    'function name() view returns (string)',
 ])
 
 const ERC721_TRANSFER = parseAbiItem(
@@ -189,12 +192,14 @@ function computeTax(totalWei: bigint): {
 
 function airdropToResponse(a: Airdrop) {
     const namesMap = getParticipantNames([a.creatorAddress, ...a.participants])
+    const spaceName = a.spaceNftAddress ? getSpaceName(a.spaceNftAddress) : null
     return {
         id: a.id,
         creatorAddress: a.creatorAddress,
         creatorName: namesMap.get(a.creatorAddress.toLowerCase()) || null,
         airdropType: a.airdropType,
         spaceNftAddress: a.spaceNftAddress || null,
+        spaceName,
         currency: a.currency,
         currencySymbol: a.currencySymbol,
         currencyDecimals: a.currencyDecimals,
@@ -310,6 +315,32 @@ async function getMembershipNftHolderAddresses(
         if (attempt < retries - 1) await sleepMs(retryDelayMs)
     }
     return getMembershipNftHolderAddressesFromEvents(bot, nftContractAddress)
+}
+
+/** Fetch the space name from the ERC721 contract, with DB caching. */
+async function fetchSpaceName(nftAddress: string): Promise<string> {
+    // Check DB cache first
+    const cached = getSpaceName(nftAddress)
+    if (cached) return cached
+
+    // Fetch from chain
+    const viem = (bot as any).viem
+    if (!viem) return ''
+    try {
+        const name = await readContract(viem, {
+            address: nftAddress as Address,
+            abi: ERC721_HOLDERS_ABI,
+            functionName: 'name',
+        }) as string
+        if (name) {
+            saveSpaceName(nftAddress, name)
+            console.log(`[SpaceName] Cached name "${name}" for ${nftAddress}`)
+        }
+        return name || ''
+    } catch (err) {
+        console.warn(`[SpaceName] Failed to fetch name for ${nftAddress}:`, err)
+        return ''
+    }
 }
 
 async function getMembershipNftHolderAddressesFromEvents(
@@ -1034,6 +1065,9 @@ app.get('/api/holders', async (c) => {
             .map((s) => s.trim())
             .filter(Boolean)
 
+        // Fetch space name (uses DB cache internally)
+        const spaceName = await fetchSpaceName(nftAddress)
+
         // Check DB cache first
         const cached = getSpaceHolders(nftAddress)
         if (cached && !isSpaceHoldersStale(nftAddress)) {
@@ -1049,6 +1083,7 @@ app.get('/api/holders', async (c) => {
             return c.json({
                 count: filtered.length,
                 nftAddress,
+                spaceName,
                 taxHolderCount: getTaxHolderCount(),
                 botAddress: bot.appAddress,
                 cached: true,
@@ -1077,6 +1112,7 @@ app.get('/api/holders', async (c) => {
         return c.json({
             count: uniqueRecipients.length,
             nftAddress,
+            spaceName,
             taxHolderCount: getTaxHolderCount(),
             botAddress: bot.appAddress,
             cached: false,
@@ -1136,6 +1172,9 @@ app.post('/api/airdrop', async (c) => {
             }
 
             spaceNftAddress = nftAddress
+
+            // Ensure space name is cached (for leaderboard & display)
+            fetchSpaceName(nftAddress).catch(() => {})
 
             // Check DB cache for space holders first
             const cached = getSpaceHolders(nftAddress)
@@ -1488,7 +1527,7 @@ app.get('/api/airdrop-history', (c) => {
 })
 
 // Leaderboard
-app.get('/api/leaderboard', (c) => {
+app.get('/api/leaderboard', async (c) => {
     const topRecipients = getTopRecipients(5)
     const topCreators = getTopCreators(5)
     const topSpaces = getTopSpaces(5)
@@ -1500,6 +1539,17 @@ app.get('/api/leaderboard', (c) => {
     ]
     const names = getParticipantNames(allAddresses)
 
+    // Fetch missing space names (for spaces that weren't named yet)
+    const enrichedSpaces = await Promise.all(
+        topSpaces.map(async (s) => {
+            if (!s.spaceName && s.spaceNftAddress) {
+                const name = await fetchSpaceName(s.spaceNftAddress)
+                return { ...s, spaceName: name || null }
+            }
+            return s
+        })
+    )
+
     return c.json({
         topRecipients: topRecipients.map(r => ({
             ...r,
@@ -1509,7 +1559,7 @@ app.get('/api/leaderboard', (c) => {
             ...r,
             displayName: names.get(r.address.toLowerCase()) || null,
         })),
-        topSpaces,
+        topSpaces: enrichedSpaces,
     })
 })
 

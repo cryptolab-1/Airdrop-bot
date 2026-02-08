@@ -197,6 +197,15 @@ export function initDb(): void {
         )
     `)
 
+    // Space name cache — persisted permanently (spaces don't rename)
+    db.run(`
+        CREATE TABLE IF NOT EXISTS space_names (
+            nft_address TEXT PRIMARY KEY,
+            name        TEXT NOT NULL DEFAULT '',
+            created_at  INTEGER NOT NULL
+        )
+    `)
+
     console.log(`[DB] SQLite database opened at ${dbPath}`)
 }
 
@@ -377,6 +386,7 @@ interface LeaderboardEntry {
 
 interface SpaceLeaderboardEntry {
     spaceNftAddress: string
+    spaceName: string | null
     count: number
     totalAmount: string
 }
@@ -425,20 +435,23 @@ export function getTopCreators(limit = 5): LeaderboardEntry[] {
 /** Top N spaces (by NFT address) that received the most airdrops. */
 export function getTopSpaces(limit = 5): SpaceLeaderboardEntry[] {
     const rows = db.query(`
-        SELECT space_nft_address,
+        SELECT a.space_nft_address,
+               sn.name AS space_name,
                COUNT(*) AS count,
-               SUM(CAST(total_amount AS INTEGER)) AS total_amount
-        FROM airdrops
-        WHERE status = 'completed'
-          AND space_nft_address IS NOT NULL
-          AND space_nft_address != ''
-        GROUP BY LOWER(space_nft_address)
+               SUM(CAST(a.total_amount AS INTEGER)) AS total_amount
+        FROM airdrops a
+        LEFT JOIN space_names sn ON LOWER(a.space_nft_address) = LOWER(sn.nft_address)
+        WHERE a.status = 'completed'
+          AND a.space_nft_address IS NOT NULL
+          AND a.space_nft_address != ''
+        GROUP BY LOWER(a.space_nft_address)
         ORDER BY count DESC
         LIMIT $limit
-    `).all({ $limit: limit }) as { space_nft_address: string; count: number; total_amount: number | null }[]
+    `).all({ $limit: limit }) as { space_nft_address: string; space_name: string | null; count: number; total_amount: number | null }[]
 
     return rows.map(r => ({
         spaceNftAddress: r.space_nft_address,
+        spaceName: r.space_name || null,
         count: r.count,
         totalAmount: String(r.total_amount ?? 0),
     }))
@@ -586,4 +599,27 @@ export function getTokenInfo(address: string): CachedTokenInfo | null {
         'SELECT address, name, symbol, decimals FROM token_cache WHERE address = $addr',
     ).get({ $addr: address.toLowerCase() }) as { address: string; name: string; symbol: string; decimals: number } | null
     return row ?? null
+}
+
+// ============================================================================
+// Space name cache (permanent — spaces don't rename)
+// ============================================================================
+
+export function saveSpaceName(nftAddress: string, name: string): void {
+    db.run(
+        `INSERT OR REPLACE INTO space_names (nft_address, name, created_at)
+         VALUES ($addr, $name, $ts)`,
+        {
+            $addr: nftAddress.toLowerCase(),
+            $name: name,
+            $ts: Date.now(),
+        },
+    )
+}
+
+export function getSpaceName(nftAddress: string): string | null {
+    const row = db.query(
+        'SELECT name FROM space_names WHERE nft_address = $addr',
+    ).get({ $addr: nftAddress.toLowerCase() }) as { name: string } | null
+    return row?.name ?? null
 }
