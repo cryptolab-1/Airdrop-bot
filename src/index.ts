@@ -181,6 +181,15 @@ function extractAddressFromStreamId(streamId: string): string | null {
     return null
 }
 
+/**
+ * Reconstruct a Towns space stream ID from a plain Ethereum address.
+ * Format: "10" (space type prefix) + address (40 hex) + zero padding (22 hex) = 64 hex chars.
+ */
+function addressToSpaceStreamId(address: string): string {
+    const hex = address.startsWith('0x') ? address.slice(2) : address
+    return '10' + hex.toLowerCase() + '0'.repeat(22)
+}
+
 function generateId(): string {
     return `airdrop_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`
 }
@@ -468,8 +477,14 @@ async function getUniqueRecipientAddresses(
  */
 async function cacheSpaceMemberNames(spaceIdOrAddress: string): Promise<void> {
     try {
+        // bot.getStreamView() needs a full Towns stream ID, not a plain address.
+        // If we got a plain 0x address, reconstruct the space stream ID.
+        const streamId = isEthAddress(spaceIdOrAddress)
+            ? addressToSpaceStreamId(spaceIdOrAddress)
+            : spaceIdOrAddress
+
         // Try to get the stream view — this may take a while for large spaces
-        const streamView = await (bot as any).getStreamView(spaceIdOrAddress)
+        const streamView = await (bot as any).getStreamView(streamId)
         if (!streamView) {
             console.log(`[Names] No stream view for ${spaceIdOrAddress}`)
             return
