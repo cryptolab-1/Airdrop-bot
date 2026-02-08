@@ -435,6 +435,9 @@
                     <label>Currency</label>
                     <select id="currencySelect">
                         <option value="towns">$TOWNS (default)</option>
+                        <option value="usdc">$USDC</option>
+                        <option value="weth">$WETH</option>
+                        <option value="cbbtc">$cbBTC</option>
                         <option value="custom">Custom Token</option>
                     </select>
                 </div>
@@ -699,6 +702,14 @@
         // Towns token default address
         const TOWNS_ADDRESS = '0x00000000A22C618fd6b4D7E9A335C4B96B189a38'
 
+        // Predefined token registry: { selectValue: { address, symbol, decimals } }
+        const KNOWN_TOKENS = {
+            towns: { address: TOWNS_ADDRESS, symbol: 'TOWNS', decimals: 18 },
+            usdc:  { address: '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913', symbol: 'USDC', decimals: 6 },
+            weth:  { address: '0x4200000000000000000000000000000000000006', symbol: 'WETH', decimals: 18 },
+            cbbtc: { address: '0xcbB7C0000aB88B473b1f5aFd9ef808440eed33Bf', symbol: 'cbBTC', decimals: 8 },
+        }
+
         // ==================================================================
         // SDK Init
         // ==================================================================
@@ -774,7 +785,8 @@
 
         function getActiveDecimals() {
             const sel = document.getElementById('currencySelect').value
-            return sel === 'custom' ? resolvedTokenDecimals : 18
+            if (KNOWN_TOKENS[sel]) return KNOWN_TOKENS[sel].decimals
+            return resolvedTokenDecimals
         }
 
         function tokensToWei(tokens, decimals) {
@@ -816,7 +828,7 @@
 
         function getTokenSymbol() {
             const sel = document.getElementById('currencySelect').value
-            if (sel === 'towns') return 'TOWNS'
+            if (KNOWN_TOKENS[sel]) return KNOWN_TOKENS[sel].symbol
             if (resolvedTokenSymbol) return resolvedTokenSymbol
             return ''
         }
@@ -831,7 +843,7 @@
 
         function getTokenAddress() {
             const sel = document.getElementById('currencySelect').value
-            if (sel === 'towns') return TOWNS_ADDRESS
+            if (KNOWN_TOKENS[sel]) return KNOWN_TOKENS[sel].address
             return document.getElementById('customCurrencyInput').value.trim() || TOWNS_ADDRESS
         }
 
@@ -1074,13 +1086,14 @@
                 custom.classList.remove('hidden')
             } else {
                 custom.classList.add('hidden')
-                // Clear resolved token info when switching back to $TOWNS
+                // Clear resolved token info when switching away from custom
                 resolvedTokenName = ''
                 resolvedTokenSymbol = ''
                 resolvedTokenDecimals = 18
                 tokenLookupSuccess = false
                 document.getElementById('tokenInfoDisplay').classList.add('hidden')
                 document.getElementById('tokenInfoError').classList.add('hidden')
+                document.getElementById('customCurrencyInput').value = ''
             }
             updatePerPerson()
             validateCreateForm()
