@@ -35,6 +35,10 @@ import {
     setParticipantName,
     getParticipantName,
     getParticipantNames,
+    saveTaxHolders,
+    getTaxHolders,
+    getTaxHolderCount,
+    getTaxHoldersLastUpdated,
 } from './db'
 import type { Airdrop, AirdropStatus } from './db'
 
@@ -71,12 +75,20 @@ const DISTRIBUTION_RETRY_DELAY_MS = Math.max(
     parseInt(process.env.AIRDROP_DISTRIBUTION_RETRY_DELAY_MS ?? '2000', 10) || 2000,
 )
 
-// Tax system: a percentage of each airdrop is distributed to town members
+// Tax system: holder tax + admin tax
+// Holder tax: distributed to NFT holders of the tax NFT contract
 const AIRDROP_TAX_PERCENT = Math.max(
     0,
     Math.min(100, parseFloat(process.env.AIRDROP_TAX_PERCENT ?? '2')),
 )
 const AIRDROP_TAX_NFT_ADDRESS = (process.env.AIRDROP_TAX_NFT_ADDRESS ?? '').trim()
+
+// Admin tax: sent to the bot admin wallet
+const AIRDROP_ADMIN_TAX_PERCENT = Math.max(
+    0,
+    Math.min(100, parseFloat(process.env.AIRDROP_ADMIN_TAX_PERCENT ?? '1')),
+)
+const BOT_ADMIN_ADDRESS = (process.env.BOT_ADMIN_ADDRESS ?? '').trim()
 
 // ============================================================================
 // Bot initialization
@@ -149,13 +161,21 @@ function generateId(): string {
     return `airdrop_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`
 }
 
-/** Calculate tax and net amounts from a gross total. */
-function computeTax(totalWei: bigint): { taxAmount: bigint; netAmount: bigint } {
-    // Use basis points (2% = 200 bps) for precision
-    const bps = BigInt(Math.round(AIRDROP_TAX_PERCENT * 100))
-    const taxAmount = (totalWei * bps) / 10000n
-    const netAmount = totalWei - taxAmount
-    return { taxAmount, netAmount }
+/** Calculate holder tax, admin tax, and net amounts from a gross total. */
+function computeTax(totalWei: bigint): {
+    holderTaxAmount: bigint
+    adminTaxAmount: bigint
+    netAmount: bigint
+} {
+    // Use basis points for precision (2% = 200 bps, 1% = 100 bps)
+    const holderBps = BigInt(Math.round(AIRDROP_TAX_PERCENT * 100))
+    const adminBps = BigInt(Math.round(AIRDROP_ADMIN_TAX_PERCENT * 100))
+    const holderTaxAmount = (totalWei * holderBps) / 10000n
+    const adminTaxAmount = isEthAddress(BOT_ADMIN_ADDRESS)
+        ? (totalWei * adminBps) / 10000n
+        : 0n
+    const netAmount = totalWei - holderTaxAmount - adminTaxAmount
+    return { holderTaxAmount, adminTaxAmount, netAmount }
 }
 
 function airdropToResponse(a: Airdrop) {
@@ -172,6 +192,8 @@ function airdropToResponse(a: Airdrop) {
         totalAmount: a.totalAmount,
         taxPercent: a.taxPercent,
         taxAmount: a.taxAmount,
+        adminTaxPercent: a.adminTaxPercent,
+        adminTaxAmount: a.adminTaxAmount,
         netAmount: a.netAmount,
         amountPerRecipient: a.amountPerRecipient,
         recipientCount: a.recipientCount,
@@ -180,7 +202,7 @@ function airdropToResponse(a: Airdrop) {
         participantNames: Object.fromEntries(
             a.participants.map(p => [p, namesMap.get(p.toLowerCase()) || null])
         ),
-        taxHolderCount: a.taxHolders.length,
+        taxHolderCount: a.taxHolders.length > 0 ? a.taxHolders.length : getTaxHolderCount(),
         txHash: a.distributionTxHash || a.depositTxHash,
         mode: a.airdropType === 'space' ? 'fixed' : 'react', // backward compat
     }
@@ -438,37 +460,59 @@ async function runDistribution(airdrop: Airdrop) {
 
     updateAirdrop(airdrop.id, { distributionTxHash: result.txHash, updatedAt: Date.now() })
 
-    // 2. Distribute tax to town members
-    // Use pre-fetched holders from airdrop, fall back to cached holders
-    const taxAmount = BigInt(airdrop.taxAmount)
-    const taxHolderList = airdrop.taxHolders.length > 0 ? airdrop.taxHolders : cachedTaxHolders
-    if (taxAmount > 0n && taxHolderList.length > 0) {
+    // 2. Distribute holder tax to town members (NFT holders)
+    const holderTaxAmount = BigInt(airdrop.taxAmount)
+    const taxHolderList = airdrop.taxHolders.length > 0 ? airdrop.taxHolders : getTaxHolders()
+    if (holderTaxAmount > 0n && taxHolderList.length > 0) {
         try {
             const taxRecipients = taxHolderList.map((a) => a as Address)
-            const source = airdrop.taxHolders.length > 0 ? 'pre-fetched' : 'cached'
-            console.log(`[Tax] Distributing ${taxAmount} tax to ${taxRecipients.length} ${source} town members`)
+            const source = airdrop.taxHolders.length > 0 ? 'pre-fetched' : 'database'
+            console.log(`[Tax] Distributing ${holderTaxAmount} holder tax to ${taxRecipients.length} ${source} town members`)
 
-            const taxPerMember = taxAmount / BigInt(taxRecipients.length)
+            const taxPerMember = holderTaxAmount / BigInt(taxRecipients.length)
             if (taxPerMember > 0n) {
                 const taxResult = await runBotDistribution(
                     taxRecipients,
                     taxPerMember,
-                    taxAmount,
+                    holderTaxAmount,
                     botAddress,
                     tokenAddress,
                 )
                 if (taxResult.ok) {
                     updateAirdrop(airdrop.id, { taxDistributionTxHash: taxResult.txHash, updatedAt: Date.now() })
-                    console.log(`[Tax] Distributed to ${taxRecipients.length} town members (tx: ${taxResult.txHash})`)
+                    console.log(`[Tax] Holder tax distributed to ${taxRecipients.length} town members (tx: ${taxResult.txHash})`)
                 } else {
-                    console.error('[Tax] Tax distribution failed:', taxResult.error)
+                    console.error('[Tax] Holder tax distribution failed:', taxResult.error)
                 }
             }
         } catch (err) {
-            console.error('[Tax] Error during tax distribution:', err)
+            console.error('[Tax] Error during holder tax distribution:', err)
         }
-    } else if (taxAmount > 0n) {
-        console.warn('[Tax] No tax holders available (pre-fetched or cached), skipping tax distribution')
+    } else if (holderTaxAmount > 0n) {
+        console.warn('[Tax] No tax holders available, skipping holder tax distribution')
+    }
+
+    // 3. Distribute admin tax to bot admin wallet
+    const adminTaxAmount = BigInt(airdrop.adminTaxAmount)
+    if (adminTaxAmount > 0n && isEthAddress(BOT_ADMIN_ADDRESS)) {
+        try {
+            console.log(`[Tax] Sending ${adminTaxAmount} admin tax to ${BOT_ADMIN_ADDRESS}`)
+            const adminResult = await runBotDistribution(
+                [BOT_ADMIN_ADDRESS as Address],
+                adminTaxAmount,
+                adminTaxAmount,
+                botAddress,
+                tokenAddress,
+            )
+            if (adminResult.ok) {
+                updateAirdrop(airdrop.id, { adminTaxDistributionTxHash: adminResult.txHash, updatedAt: Date.now() })
+                console.log(`[Tax] Admin tax sent (tx: ${adminResult.txHash})`)
+            } else {
+                console.error('[Tax] Admin tax distribution failed:', adminResult.error)
+            }
+        } catch (err) {
+            console.error('[Tax] Error during admin tax distribution:', err)
+        }
     }
 
     updateAirdrop(airdrop.id, { status: 'completed', updatedAt: Date.now() })
@@ -830,9 +874,8 @@ app.get('/.well-known/farcaster.json', (c) => {
 // API Routes
 // ============================================================================
 
-// Cached tax holders (populated at startup and refreshed periodically)
-let cachedTaxHolderCount = 0
-let cachedTaxHolders: string[] = []
+// Tax holders are stored in the database and refreshed every 24 hours
+const TAX_HOLDER_REFRESH_MS = 24 * 60 * 60 * 1000 // 24 hours
 
 async function refreshTaxHolders() {
     if (AIRDROP_TAX_PERCENT <= 0 || !isEthAddress(AIRDROP_TAX_NFT_ADDRESS)) return
@@ -847,17 +890,26 @@ async function refreshTaxHolders() {
             rawHolders.map((a) => a as string),
             { onlyResolved: false },
         )
-        cachedTaxHolders = resolved.map((a) => a as string)
-        cachedTaxHolderCount = cachedTaxHolders.length
-        console.log(`[Tax] Cached ${cachedTaxHolderCount} tax holders`)
+        const holders = resolved.map((a) => a as string)
+        saveTaxHolders(holders)
+        console.log(`[Tax] Stored ${holders.length} tax holders in database`)
     } catch (err) {
         console.error('[Tax] Failed to refresh tax holders:', err)
     }
 }
 
-// Refresh at startup and every 5 minutes
-refreshTaxHolders()
-setInterval(refreshTaxHolders, 5 * 60 * 1000)
+// Refresh if stale (>24h) or empty, then schedule every 24h
+;(async () => {
+    const lastUpdated = getTaxHoldersLastUpdated()
+    const count = getTaxHolderCount()
+    if (count === 0 || !lastUpdated || Date.now() - lastUpdated > TAX_HOLDER_REFRESH_MS) {
+        console.log('[Tax] Tax holders stale or empty, refreshing...')
+        await refreshTaxHolders()
+    } else {
+        console.log(`[Tax] ${count} tax holders in DB, last updated ${new Date(lastUpdated).toISOString()}`)
+    }
+})()
+setInterval(refreshTaxHolders, TAX_HOLDER_REFRESH_MS)
 
 // Token info lookup (name, symbol, decimals)
 // Some tokens (like cbBTC) use bytes32 for name/symbol, so we try both ABIs
@@ -924,10 +976,14 @@ app.get('/api/token-info', async (c) => {
 
 // Public config (tax rate, etc.)
 app.get('/api/config', (c) => {
+    const totalTax = AIRDROP_TAX_PERCENT + (isEthAddress(BOT_ADMIN_ADDRESS) ? AIRDROP_ADMIN_TAX_PERCENT : 0)
     return c.json({
         taxPercent: AIRDROP_TAX_PERCENT,
+        adminTaxPercent: isEthAddress(BOT_ADMIN_ADDRESS) ? AIRDROP_ADMIN_TAX_PERCENT : 0,
+        totalTaxPercent: totalTax,
         taxEnabled: AIRDROP_TAX_PERCENT > 0 && isEthAddress(AIRDROP_TAX_NFT_ADDRESS),
-        taxHolderCount: cachedTaxHolderCount,
+        adminTaxEnabled: AIRDROP_ADMIN_TAX_PERCENT > 0 && isEthAddress(BOT_ADMIN_ADDRESS),
+        taxHolderCount: getTaxHolderCount(),
         botAddress: bot.appAddress,
     })
 })
@@ -967,27 +1023,8 @@ app.get('/api/holders', async (c) => {
             },
         )
 
-        // Also fetch tax holder count
-        let taxHolderCount = 0
-        if (AIRDROP_TAX_PERCENT > 0 && isEthAddress(AIRDROP_TAX_NFT_ADDRESS)) {
-            try {
-                const taxHolders = await getMembershipNftHolderAddresses(
-                    bot as AnyBot,
-                    AIRDROP_TAX_NFT_ADDRESS as Address,
-                )
-                const taxRecipients = await getUniqueRecipientAddresses(
-                    bot as AnyBot,
-                    taxHolders.map((a) => a as string),
-                    {
-                        excludeAddresses: excludeAddresses.length > 0 ? excludeAddresses : undefined,
-                        onlyResolved: false,
-                    },
-                )
-                taxHolderCount = taxRecipients.length
-            } catch (err) {
-                console.error('[Tax] Failed to fetch tax holders:', err)
-            }
-        }
+        // Tax holder count from database
+        const taxHolderCount = getTaxHolderCount()
 
         return c.json({
             count: uniqueRecipients.length,
@@ -1070,31 +1107,11 @@ app.post('/api/airdrop', async (c) => {
         }
         // For 'public' airdrops, participants join later
 
-        // Pre-fetch tax holders so they're ready at distribution time
-        let taxHolders: string[] = []
-        // Pre-fetch tax holders (no exclusions — all NFT holders receive tax)
-        if (AIRDROP_TAX_PERCENT > 0 && isEthAddress(AIRDROP_TAX_NFT_ADDRESS)) {
-            try {
-                console.log('[Tax] Pre-fetching tax holders at airdrop creation...')
-                const rawTaxHolders = await getMembershipNftHolderAddresses(
-                    bot as AnyBot,
-                    AIRDROP_TAX_NFT_ADDRESS as Address,
-                )
-                taxHolders = (
-                    await getUniqueRecipientAddresses(
-                        bot as AnyBot,
-                        rawTaxHolders.map((a) => a as string),
-                        { onlyResolved: false },
-                    )
-                ).map((a) => a as string)
-                console.log(`[Tax] Pre-fetched ${taxHolders.length} tax holders`)
-            } catch (err) {
-                console.error('[Tax] Failed to pre-fetch tax holders:', err)
-            }
-        }
+        // Tax holders come from the database (refreshed every 24h)
+        const taxHolders = getTaxHolders()
 
         const totalBigInt = BigInt(totalAmount)
-        const { taxAmount, netAmount } = computeTax(totalBigInt)
+        const { holderTaxAmount, adminTaxAmount, netAmount } = computeTax(totalBigInt)
         const amountPer = recipientCount > 0 ? netAmount / BigInt(recipientCount) : 0n
 
         const airdrop: Airdrop = {
@@ -1109,7 +1126,9 @@ app.post('/api/airdrop', async (c) => {
             currencyDecimals: typeof rawDecimals === 'number' ? rawDecimals : 18,
             totalAmount,
             taxPercent: AIRDROP_TAX_PERCENT,
-            taxAmount: taxAmount.toString(),
+            taxAmount: holderTaxAmount.toString(),
+            adminTaxPercent: isEthAddress(BOT_ADMIN_ADDRESS) ? AIRDROP_ADMIN_TAX_PERCENT : 0,
+            adminTaxAmount: adminTaxAmount.toString(),
             netAmount: netAmount.toString(),
             amountPerRecipient: amountPer.toString(),
             recipientCount,

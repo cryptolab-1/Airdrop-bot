@@ -22,8 +22,10 @@ export interface Airdrop {
     currencySymbol: string
     currencyDecimals: number
     totalAmount: string
-    taxPercent: number
-    taxAmount: string
+    taxPercent: number        // holder tax % (e.g. 2)
+    taxAmount: string         // holder tax wei
+    adminTaxPercent: number   // admin tax % (e.g. 1)
+    adminTaxAmount: string    // admin tax wei
     netAmount: string
     amountPerRecipient: string
     recipientCount: number
@@ -33,6 +35,7 @@ export interface Airdrop {
     depositTxHash?: string
     distributionTxHash?: string
     taxDistributionTxHash?: string
+    adminTaxDistributionTxHash?: string
     createdAt: number
     updatedAt: number
 }
@@ -52,6 +55,8 @@ interface AirdropRow {
     total_amount: string
     tax_percent: number
     tax_amount: string
+    admin_tax_percent: number
+    admin_tax_amount: string
     net_amount: string
     amount_per_recipient: string
     recipient_count: number
@@ -61,6 +66,7 @@ interface AirdropRow {
     deposit_tx_hash: string | null
     distribution_tx_hash: string | null
     tax_distribution_tx_hash: string | null
+    admin_tax_distribution_tx_hash: string | null
     created_at: number
     updated_at: number
 }
@@ -107,6 +113,8 @@ export function initDb(): void {
             total_amount             TEXT NOT NULL,
             tax_percent              REAL NOT NULL DEFAULT 0,
             tax_amount               TEXT NOT NULL DEFAULT '0',
+            admin_tax_percent        REAL NOT NULL DEFAULT 0,
+            admin_tax_amount         TEXT NOT NULL DEFAULT '0',
             net_amount               TEXT NOT NULL,
             amount_per_recipient     TEXT NOT NULL,
             recipient_count          INTEGER NOT NULL DEFAULT 0,
@@ -116,15 +124,37 @@ export function initDb(): void {
             deposit_tx_hash          TEXT,
             distribution_tx_hash     TEXT,
             tax_distribution_tx_hash TEXT,
+            admin_tax_distribution_tx_hash TEXT,
             created_at               INTEGER NOT NULL,
             updated_at               INTEGER NOT NULL
         )
     `)
 
+    // Migrate existing DB: add new columns if they don't exist
+    const cols = db.query("PRAGMA table_info(airdrops)").all() as { name: string }[]
+    const colNames = new Set(cols.map((c) => c.name))
+    if (!colNames.has('admin_tax_percent')) {
+        db.run("ALTER TABLE airdrops ADD COLUMN admin_tax_percent REAL NOT NULL DEFAULT 0")
+    }
+    if (!colNames.has('admin_tax_amount')) {
+        db.run("ALTER TABLE airdrops ADD COLUMN admin_tax_amount TEXT NOT NULL DEFAULT '0'")
+    }
+    if (!colNames.has('admin_tax_distribution_tx_hash')) {
+        db.run("ALTER TABLE airdrops ADD COLUMN admin_tax_distribution_tx_hash TEXT")
+    }
+
     db.run(`
         CREATE TABLE IF NOT EXISTS participant_names (
             address      TEXT PRIMARY KEY,
             display_name TEXT NOT NULL
+        )
+    `)
+
+    // Tax holders table — refreshed every 24h from blockchain
+    db.run(`
+        CREATE TABLE IF NOT EXISTS tax_holders (
+            address    TEXT PRIMARY KEY,
+            updated_at INTEGER NOT NULL
         )
     `)
 
@@ -147,6 +177,8 @@ function rowToAirdrop(row: AirdropRow): Airdrop {
         totalAmount: row.total_amount,
         taxPercent: row.tax_percent,
         taxAmount: row.tax_amount,
+        adminTaxPercent: row.admin_tax_percent,
+        adminTaxAmount: row.admin_tax_amount,
         netAmount: row.net_amount,
         amountPerRecipient: row.amount_per_recipient,
         recipientCount: row.recipient_count,
@@ -156,6 +188,7 @@ function rowToAirdrop(row: AirdropRow): Airdrop {
         depositTxHash: row.deposit_tx_hash ?? undefined,
         distributionTxHash: row.distribution_tx_hash ?? undefined,
         taxDistributionTxHash: row.tax_distribution_tx_hash ?? undefined,
+        adminTaxDistributionTxHash: row.admin_tax_distribution_tx_hash ?? undefined,
         createdAt: row.created_at,
         updatedAt: row.updated_at,
     }
@@ -169,18 +202,22 @@ const SAVE_SQL = `
     INSERT OR REPLACE INTO airdrops (
         id, creator_address, airdrop_type, space_nft_address,
         currency, currency_symbol, currency_decimals,
-        total_amount, tax_percent, tax_amount, net_amount,
+        total_amount, tax_percent, tax_amount,
+        admin_tax_percent, admin_tax_amount, net_amount,
         amount_per_recipient, recipient_count, status,
         participants, tax_holders,
-        deposit_tx_hash, distribution_tx_hash, tax_distribution_tx_hash,
+        deposit_tx_hash, distribution_tx_hash,
+        tax_distribution_tx_hash, admin_tax_distribution_tx_hash,
         created_at, updated_at
     ) VALUES (
         $id, $creator_address, $airdrop_type, $space_nft_address,
         $currency, $currency_symbol, $currency_decimals,
-        $total_amount, $tax_percent, $tax_amount, $net_amount,
+        $total_amount, $tax_percent, $tax_amount,
+        $admin_tax_percent, $admin_tax_amount, $net_amount,
         $amount_per_recipient, $recipient_count, $status,
         $participants, $tax_holders,
-        $deposit_tx_hash, $distribution_tx_hash, $tax_distribution_tx_hash,
+        $deposit_tx_hash, $distribution_tx_hash,
+        $tax_distribution_tx_hash, $admin_tax_distribution_tx_hash,
         $created_at, $updated_at
     )
 `
@@ -197,6 +234,8 @@ export function saveAirdrop(a: Airdrop): void {
         $total_amount: a.totalAmount,
         $tax_percent: a.taxPercent,
         $tax_amount: a.taxAmount,
+        $admin_tax_percent: a.adminTaxPercent,
+        $admin_tax_amount: a.adminTaxAmount,
         $net_amount: a.netAmount,
         $amount_per_recipient: a.amountPerRecipient,
         $recipient_count: a.recipientCount,
@@ -206,6 +245,7 @@ export function saveAirdrop(a: Airdrop): void {
         $deposit_tx_hash: a.depositTxHash ?? null,
         $distribution_tx_hash: a.distributionTxHash ?? null,
         $tax_distribution_tx_hash: a.taxDistributionTxHash ?? null,
+        $admin_tax_distribution_tx_hash: a.adminTaxDistributionTxHash ?? null,
         $created_at: a.createdAt,
         $updated_at: a.updatedAt,
     })
@@ -224,6 +264,7 @@ export function updateAirdrop(id: string, fields: Partial<Airdrop>): void {
     if (fields.depositTxHash !== undefined) mapping.depositTxHash = { col: 'deposit_tx_hash', val: fields.depositTxHash }
     if (fields.distributionTxHash !== undefined) mapping.distributionTxHash = { col: 'distribution_tx_hash', val: fields.distributionTxHash }
     if (fields.taxDistributionTxHash !== undefined) mapping.taxDistributionTxHash = { col: 'tax_distribution_tx_hash', val: fields.taxDistributionTxHash }
+    if (fields.adminTaxDistributionTxHash !== undefined) mapping.adminTaxDistributionTxHash = { col: 'admin_tax_distribution_tx_hash', val: fields.adminTaxDistributionTxHash }
     if (fields.participants !== undefined) {
         mapping.participants = { col: 'participants', val: JSON.stringify(fields.participants) }
         mapping.recipient_count = { col: 'recipient_count', val: fields.participants.length }
@@ -299,4 +340,35 @@ export function getParticipantNames(addresses: string[]): Map<string, string> {
         }
     }
     return result
+}
+
+// ============================================================================
+// Tax holders (persisted, refreshed every 24h)
+// ============================================================================
+
+export function saveTaxHolders(addresses: string[]): void {
+    const now = Date.now()
+    const tx = db.transaction(() => {
+        db.run('DELETE FROM tax_holders')
+        const stmt = db.prepare('INSERT INTO tax_holders (address, updated_at) VALUES ($addr, $ts)')
+        for (const addr of addresses) {
+            stmt.run({ $addr: addr.toLowerCase(), $ts: now })
+        }
+    })
+    tx()
+}
+
+export function getTaxHolders(): string[] {
+    const rows = db.query('SELECT address FROM tax_holders').all() as { address: string }[]
+    return rows.map((r) => r.address)
+}
+
+export function getTaxHolderCount(): number {
+    const row = db.query('SELECT COUNT(*) as cnt FROM tax_holders').get() as { cnt: number }
+    return row.cnt
+}
+
+export function getTaxHoldersLastUpdated(): number | null {
+    const row = db.query('SELECT MAX(updated_at) as ts FROM tax_holders').get() as { ts: number | null }
+    return row?.ts ?? null
 }

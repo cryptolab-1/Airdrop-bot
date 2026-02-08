@@ -474,9 +474,13 @@
 
                 <!-- Tax & per-person summary -->
                 <div id="taxSummary" class="hidden" style="margin-top:8px;">
-                    <div class="info-row" style="border-color:rgba(234,179,8,0.2); background:rgba(234,179,8,0.06);">
-                        <span class="info-label">Tax (<span id="taxPercentLabel">2</span>%)</span>
+                    <div class="info-row" id="holderTaxRow" style="border-color:rgba(234,179,8,0.2); background:rgba(234,179,8,0.06);">
+                        <span class="info-label">Holders Tax (<span id="taxPercentLabel">2</span>%)</span>
                         <span class="info-value" style="color:#fbbf24;" id="taxAmountLabel">-</span>
+                    </div>
+                    <div class="info-row hidden" id="adminTaxRow" style="border-color:rgba(139,92,246,0.2); background:rgba(139,92,246,0.06);">
+                        <span class="info-label">Admin Tax (<span id="adminTaxPercentLabel">1</span>%)</span>
+                        <span class="info-value" style="color:#a78bfa;" id="adminTaxAmountLabel">-</span>
                     </div>
                     <div class="info-row">
                         <span class="info-label">Net to Recipients</span>
@@ -490,7 +494,7 @@
                     </div>
                 </div>
                 <div id="taxNote" class="hidden" style="margin-top:4px;">
-                    <div class="hint" style="margin:0; text-align:center; font-style:italic;">Tax is distributed to <span id="taxMemberCount">0</span> Crypto Lab's town members</div>
+                    <div class="hint" style="margin:0; text-align:center; font-style:italic;">Holders tax is distributed to <span id="taxMemberCount">0</span> Crypto Lab's town members</div>
                 </div>
 
                 <div style="margin-top:16px;">
@@ -633,8 +637,12 @@
                     <span class="info-value" id="statusTotal">-</span>
                 </div>
                 <div class="info-row hidden" id="statusTaxRow" style="border-color:rgba(234,179,8,0.2); background:rgba(234,179,8,0.06);">
-                    <span class="info-label">Tax (<span id="statusTaxPercent">2</span>%)</span>
+                    <span class="info-label">Holders Tax (<span id="statusTaxPercent">2</span>%)</span>
                     <span class="info-value" style="color:#fbbf24;" id="statusTaxAmount">-</span>
+                </div>
+                <div class="info-row hidden" id="statusAdminTaxRow" style="border-color:rgba(139,92,246,0.2); background:rgba(139,92,246,0.06);">
+                    <span class="info-label">Admin Tax (<span id="statusAdminTaxPercent">1</span>%)</span>
+                    <span class="info-value" style="color:#a78bfa;" id="statusAdminTaxAmount">-</span>
                 </div>
                 <div class="info-row hidden" id="statusNetRow">
                     <span class="info-label">Net to Recipients</span>
@@ -857,10 +865,13 @@
 
         // Compute tax/net on the client (mirrors server logic)
         function computeTaxClient(totalWei) {
-            const bps = BigInt(Math.round(taxPercent * 100))
-            const tax = (BigInt(totalWei) * bps) / 10000n
-            const net = BigInt(totalWei) - tax
-            return { tax, net }
+            const holderBps = BigInt(Math.round(taxPercent * 100))
+            const adminBps = BigInt(Math.round(adminTaxPercent * 100))
+            const total = BigInt(totalWei)
+            const holderTax = (total * holderBps) / 10000n
+            const adminTax = adminTaxEnabled ? (total * adminBps) / 10000n : 0n
+            const net = total - holderTax - adminTax
+            return { holderTax, adminTax, net }
         }
 
         // ==================================================================
@@ -872,7 +883,10 @@
                 if (!res.ok) return
                 const data = await res.json()
                 taxPercent = data.taxPercent ?? 2
+                adminTaxPercent = data.adminTaxPercent ?? 1
+                totalTaxPercent = data.totalTaxPercent ?? (taxPercent + adminTaxPercent)
                 taxEnabled = data.taxEnabled ?? false
+                adminTaxEnabled = data.adminTaxEnabled ?? false
                 botTreasuryAddress = data.botAddress || botTreasuryAddress
                 if (data.taxHolderCount > 0) {
                     taxHolderCount = data.taxHolderCount
@@ -1111,10 +1125,19 @@
             const label = getTokenLabel()
 
             // Tax summary (shown whenever a valid amount is entered)
-            if (wei && BigInt(wei) > 0n && taxPercent > 0) {
-                const { tax, net } = computeTaxClient(wei)
+            if (wei && BigInt(wei) > 0n && (taxPercent > 0 || adminTaxPercent > 0)) {
+                const { holderTax, adminTax, net } = computeTaxClient(wei)
                 document.getElementById('taxPercentLabel').textContent = taxPercent
-                document.getElementById('taxAmountLabel').textContent = formatTokens(tax.toString()) + ' ' + label
+                document.getElementById('taxAmountLabel').textContent = formatTokens(holderTax.toString()) + ' ' + label
+
+                if (adminTaxEnabled && adminTax > 0n) {
+                    document.getElementById('adminTaxPercentLabel').textContent = adminTaxPercent
+                    document.getElementById('adminTaxAmountLabel').textContent = formatTokens(adminTax.toString()) + ' ' + label
+                    document.getElementById('adminTaxRow').classList.remove('hidden')
+                } else {
+                    document.getElementById('adminTaxRow').classList.add('hidden')
+                }
+
                 document.getElementById('netAmountLabel').textContent = formatTokens(net.toString()) + ' ' + label
                 document.getElementById('taxSummary').classList.remove('hidden')
                 document.getElementById('taxNote').classList.remove('hidden')
@@ -1298,12 +1321,23 @@
                 document.getElementById('depositTaxPercent').textContent = airdrop.taxPercent
                 document.getElementById('depositTaxAmount').textContent =
                     formatTokens(airdrop.taxAmount, dec) + ' ' + label
-                document.getElementById('depositNetAmount').textContent =
-                    formatTokens(airdrop.netAmount, dec) + ' ' + label
                 document.getElementById('depositTaxRow').classList.remove('hidden')
-                document.getElementById('depositNetRow').classList.remove('hidden')
             } else {
                 document.getElementById('depositTaxRow').classList.add('hidden')
+            }
+            if (airdrop.adminTaxPercent > 0 && airdrop.adminTaxAmount && airdrop.adminTaxAmount !== '0') {
+                document.getElementById('depositAdminTaxPercent').textContent = airdrop.adminTaxPercent
+                document.getElementById('depositAdminTaxAmount').textContent =
+                    formatTokens(airdrop.adminTaxAmount, dec) + ' ' + label
+                document.getElementById('depositAdminTaxRow').classList.remove('hidden')
+            } else {
+                document.getElementById('depositAdminTaxRow').classList.add('hidden')
+            }
+            if ((airdrop.taxPercent > 0 && airdrop.taxAmount !== '0') || (airdrop.adminTaxPercent > 0 && airdrop.adminTaxAmount !== '0')) {
+                document.getElementById('depositNetAmount').textContent =
+                    formatTokens(airdrop.netAmount, dec) + ' ' + label
+                document.getElementById('depositNetRow').classList.remove('hidden')
+            } else {
                 document.getElementById('depositNetRow').classList.add('hidden')
             }
 
@@ -1578,11 +1612,21 @@
             if (airdrop.taxPercent > 0 && airdrop.taxAmount && airdrop.taxAmount !== '0') {
                 document.getElementById('statusTaxPercent').textContent = airdrop.taxPercent
                 document.getElementById('statusTaxAmount').textContent = formatTokens(airdrop.taxAmount, dec) + ' ' + sym
-                document.getElementById('statusNetAmount').textContent = formatTokens(airdrop.netAmount, dec) + ' ' + sym
                 document.getElementById('statusTaxRow').classList.remove('hidden')
-                document.getElementById('statusNetRow').classList.remove('hidden')
             } else {
                 document.getElementById('statusTaxRow').classList.add('hidden')
+            }
+            if (airdrop.adminTaxPercent > 0 && airdrop.adminTaxAmount && airdrop.adminTaxAmount !== '0') {
+                document.getElementById('statusAdminTaxPercent').textContent = airdrop.adminTaxPercent
+                document.getElementById('statusAdminTaxAmount').textContent = formatTokens(airdrop.adminTaxAmount, dec) + ' ' + sym
+                document.getElementById('statusAdminTaxRow').classList.remove('hidden')
+            } else {
+                document.getElementById('statusAdminTaxRow').classList.add('hidden')
+            }
+            if ((airdrop.taxPercent > 0 && airdrop.taxAmount !== '0') || (airdrop.adminTaxPercent > 0 && airdrop.adminTaxAmount !== '0')) {
+                document.getElementById('statusNetAmount').textContent = formatTokens(airdrop.netAmount, dec) + ' ' + sym
+                document.getElementById('statusNetRow').classList.remove('hidden')
+            } else {
                 document.getElementById('statusNetRow').classList.add('hidden')
             }
 
