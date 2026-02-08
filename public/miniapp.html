@@ -171,6 +171,13 @@
             box-shadow: 0 4px 15px rgba(239,68,68,0.3);
         }
 
+        button.joined {
+            background: linear-gradient(135deg, #22c55e, #16a34a);
+            box-shadow: 0 4px 15px rgba(34,197,94,0.3);
+            cursor: default;
+        }
+        button.joined:hover { transform: none; box-shadow: 0 4px 15px rgba(34,197,94,0.3); }
+
         .back-btn {
             background: none;
             border: none;
@@ -893,8 +900,16 @@
         // Screen navigation
         // ==================================================================
         const screens = ['homeScreen', 'createScreen', 'depositScreen', 'publicScreen', 'statusScreen', 'leaderboardScreen', 'historyScreen']
+        const screenHistory = ['homeScreen']
 
-        function showScreen(name) {
+        function showScreen(name, skipHistory) {
+            // Track navigation history
+            if (!skipHistory) {
+                const currentScreen = screens.find(id => !document.getElementById(id).classList.contains('hidden'))
+                if (currentScreen && currentScreen !== name) {
+                    screenHistory.push(currentScreen)
+                }
+            }
             screens.forEach(id => {
                 const el = document.getElementById(id)
                 if (id === name) el.classList.remove('hidden')
@@ -904,6 +919,17 @@
             if (name !== 'statusScreen' && pollInterval) {
                 clearInterval(pollInterval)
                 pollInterval = null
+            }
+        }
+
+        function goBack() {
+            if (screenHistory.length > 0) {
+                const prev = screenHistory.pop()
+                showScreen(prev, true)
+                // Refresh data when going back to public screen
+                if (prev === 'publicScreen') loadPublicAirdrops()
+            } else {
+                showScreen('homeScreen', true)
             }
         }
 
@@ -1422,12 +1448,12 @@
         }
 
         document.getElementById('createBackBtn').addEventListener('click', () => {
-            showScreen('homeScreen')
+            goBack()
         })
 
         document.getElementById('depositBackBtn').addEventListener('click', () => {
             stopDepositPolling()
-            showScreen('createScreen')
+            goBack()
         })
 
         // Launch Airdrop → Create + go to deposit
@@ -1732,8 +1758,9 @@
                         <div class="airdrop-card-detail">Per person: ${drop.recipientCount > 0 ? formatTokens(drop.amountPerRecipient, drop.currencyDecimals ?? 18) : '—'} ${drop.currencySymbol ? '$' + drop.currencySymbol : 'tokens'}</div>
                         <div class="airdrop-card-detail" style="opacity:0.4;">Created by ${drop.creatorName || shortAddr(drop.creatorAddress)}</div>
                         <div class="airdrop-card-actions">
-                            ${canJoin && !alreadyJoined ? `<button class="sm" onclick="joinPublicDrop('${drop.id}')">Join</button>` : ''}
-                            ${canJoin && alreadyJoined ? `<button class="sm secondary" disabled>Joined</button>` : ''}
+                            ${canJoin && !alreadyJoined && !(drop.maxParticipants > 0 && drop.recipientCount >= drop.maxParticipants) ? `<button class="sm" onclick="joinPublicDrop('${drop.id}')">Join</button>` : ''}
+                            ${canJoin && !alreadyJoined && drop.maxParticipants > 0 && drop.recipientCount >= drop.maxParticipants ? `<button class="sm secondary" disabled>Full</button>` : ''}
+                            ${alreadyJoined ? `<button class="sm joined" disabled>&#10003; Joined</button>` : ''}
                             ${isCreator ? `<button class="sm secondary" onclick="managePublicDrop('${drop.id}')">Manage</button>` : ''}
                             <button class="sm secondary" onclick="viewDrop('${drop.id}')">View</button>
                         </div>
@@ -1747,7 +1774,7 @@
         }
 
         document.getElementById('publicBackBtn').addEventListener('click', () => {
-            showScreen('homeScreen')
+            goBack()
         })
 
         // Global handlers for inline onclick
@@ -1850,14 +1877,28 @@
             const isPublic = airdrop.airdropType === 'public'
             const maxP = airdrop.maxParticipants || 0
 
-            // Join section (public, funded, not creator, not already joined)
+            // Join section (public, funded)
             const joinSection = document.getElementById('statusJoinSection')
             const alreadyJoined = airdrop.participants?.some(p =>
                 p.toLowerCase() === userId || (userAddr && p.toLowerCase() === userAddr)
             )
             const isFull = maxP > 0 && airdrop.recipientCount >= maxP
-            if (isPublic && airdrop.status === 'funded' && !alreadyJoined && !isFull) {
+            const joinBtn = document.getElementById('statusJoinBtn')
+            if (isPublic && airdrop.status === 'funded') {
                 joinSection.classList.remove('hidden')
+                if (alreadyJoined) {
+                    joinBtn.innerHTML = '&#10003; Joined'
+                    joinBtn.className = 'joined'
+                    joinBtn.disabled = true
+                } else if (isFull) {
+                    joinBtn.textContent = 'Full'
+                    joinBtn.className = 'secondary'
+                    joinBtn.disabled = true
+                } else {
+                    joinBtn.textContent = 'Join This Airdrop'
+                    joinBtn.className = ''
+                    joinBtn.disabled = false
+                }
             } else {
                 joinSection.classList.add('hidden')
             }
@@ -1932,7 +1973,6 @@
                 updateStatusUI(updated)
             } catch (err) {
                 showError('statusError', err.message)
-            } finally {
                 btn.disabled = false
                 btn.textContent = 'Join This Airdrop'
             }
@@ -2006,10 +2046,10 @@
         })
 
         document.getElementById('statusBackBtn').addEventListener('click', () => {
-            showScreen('homeScreen')
+            goBack()
         })
         document.getElementById('statusHomeBtn').addEventListener('click', () => {
-            showScreen('homeScreen')
+            goBack()
         })
 
         // Polling
@@ -2064,7 +2104,7 @@
         // LEADERBOARD SCREEN
         // ==================================================================
         document.getElementById('leaderboardBackBtn').addEventListener('click', () => {
-            showScreen('homeScreen')
+            goBack()
         })
 
         async function loadLeaderboard() {
@@ -2128,7 +2168,7 @@
         // HISTORY SCREEN
         // ==================================================================
         document.getElementById('historyBackBtn').addEventListener('click', () => {
-            showScreen('homeScreen')
+            goBack()
         })
 
         async function loadHistory() {

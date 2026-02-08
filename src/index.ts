@@ -1392,7 +1392,9 @@ app.post('/api/airdrop/:id/join', async (c) => {
             return c.json({ error: 'This airdrop has reached the maximum number of participants' }, 400)
         }
 
-        if (!airdrop.participants.includes(walletAddress)) {
+        // Case-insensitive duplicate check
+        const alreadyJoined = airdrop.participants.some(p => p.toLowerCase() === walletAddress.toLowerCase())
+        if (!alreadyJoined) {
             const newParticipants = [...airdrop.participants, walletAddress]
             const newCount = newParticipants.length
 
@@ -1406,13 +1408,23 @@ app.post('/api/airdrop/:id/join', async (c) => {
                 updatedAt: Date.now(),
             })
 
+            console.log(`[Join] User ${walletAddress} joined airdrop ${airdrop.id} (${newCount}/${maxP || '∞'} participants)`)
+
             // Auto-distribute when max participants reached
             if (maxP > 0 && newCount >= maxP) {
                 console.log(`[AutoDistribute] Max participants (${maxP}) reached for ${airdrop.id}, starting distribution`)
                 updateAirdrop(airdrop.id, { status: 'distributing', updatedAt: Date.now() })
                 const fresh = getAirdrop(airdrop.id)
-                if (fresh) runDistribution(fresh).catch(console.error)
+                if (fresh) {
+                    runDistribution(fresh).catch(err => {
+                        console.error(`[AutoDistribute] Distribution failed for ${airdrop.id}:`, err)
+                    })
+                } else {
+                    console.error(`[AutoDistribute] Could not re-read airdrop ${airdrop.id} from DB`)
+                }
             }
+        } else {
+            console.log(`[Join] User ${walletAddress} already joined airdrop ${airdrop.id}`)
         }
 
         const updated = getAirdrop(airdrop.id)!
