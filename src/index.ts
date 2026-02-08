@@ -31,6 +31,7 @@ import {
     updateAirdrop,
     listPublicAirdrops,
     listAirdropsByCreator,
+    listAirdropHistory,
     getAirdropCount,
     setParticipantName,
     getParticipantName,
@@ -39,6 +40,14 @@ import {
     getTaxHolders,
     getTaxHolderCount,
     getTaxHoldersLastUpdated,
+    saveSpaceHolders,
+    getSpaceHolders,
+    isSpaceHoldersStale,
+    saveTokenInfo,
+    getTokenInfo,
+    getTopRecipients,
+    getTopCreators,
+    getTopSpaces,
 } from './db'
 import type { Airdrop, AirdropStatus } from './db'
 
@@ -204,6 +213,9 @@ function airdropToResponse(a: Airdrop) {
         ),
         taxHolderCount: a.taxHolders.length > 0 ? a.taxHolders.length : getTaxHolderCount(),
         txHash: a.distributionTxHash || a.depositTxHash,
+        title: a.title || null,
+        description: a.description || null,
+        createdAt: a.createdAt,
         mode: a.airdropType === 'space' ? 'fixed' : 'react', // backward compat
     }
 }
@@ -940,6 +952,14 @@ app.get('/api/token-info', async (c) => {
     if (!isEthAddress(address)) {
         return c.json({ error: 'Invalid address' }, 400)
     }
+
+    // Check DB cache first
+    const cached = getTokenInfo(address)
+    if (cached) {
+        console.log(`[TokenInfo] Cache hit for ${address}: ${cached.symbol}`)
+        return c.json({ name: cached.name, symbol: cached.symbol, decimals: cached.decimals, address: cached.address, cached: true })
+    }
+
     try {
         // Try string ABI first, then bytes32 fallback
         const results = await multicall(bot.viem, {
@@ -967,6 +987,11 @@ app.get('/api/token-info', async (c) => {
         if (!name && !symbol) {
             return c.json({ error: 'Not a valid ERC20 token' }, 400)
         }
+
+        // Store in DB cache for future lookups
+        saveTokenInfo(address, name || '', symbol || '', decimals)
+        console.log(`[TokenInfo] Cached token ${symbol} at ${address}`)
+
         return c.json({ name, symbol, decimals, address })
     } catch (err) {
         console.error('[TokenInfo] Error:', err)
@@ -989,10 +1014,8 @@ app.get('/api/config', (c) => {
 })
 
 // Get NFT holder count for a space (pass spaceId as query param)
+// Uses DB cache first, falls back to on-chain fetch, stores result
 app.get('/api/holders', async (c) => {
-    // Use spaceId from query param (= the space's membership NFT contract)
-    // The spaceId may be a raw address or an encoded Towns stream ID
-    // Fall back to AIRDROP_MEMBERSHIP_NFT_ADDRESS env for backward compat
     const rawSpaceId = (c.req.query('spaceId') ?? '').trim()
     const extractedAddress = extractAddressFromStreamId(rawSpaceId)
     const nftAddress = extractedAddress
@@ -1005,14 +1028,37 @@ app.get('/api/holders', async (c) => {
     }
 
     try {
-        const holders = await getMembershipNftHolderAddresses(
-            bot as AnyBot,
-            nftAddress as Address,
-        )
         const excludeAddresses = (process.env.AIRDROP_EXCLUDE_ADDRESSES ?? '')
             .split(',')
             .map((s) => s.trim())
             .filter(Boolean)
+
+        // Check DB cache first
+        const cached = getSpaceHolders(nftAddress)
+        if (cached && !isSpaceHoldersStale(nftAddress)) {
+            console.log(`[Holders] Using cached ${cached.length} holders for ${nftAddress}`)
+            // Apply exclude filter on cached data
+            const excludeSet = new Set(excludeAddresses.map(a => a.toLowerCase()))
+            const botApp = (bot.appAddress ?? '').toLowerCase()
+            const botId = (bot.viem.account.address ?? '').toLowerCase()
+            const filtered = cached.filter(a => {
+                const lower = a.toLowerCase()
+                return lower !== botApp && lower !== botId && !excludeSet.has(lower)
+            })
+            return c.json({
+                count: filtered.length,
+                nftAddress,
+                taxHolderCount: getTaxHolderCount(),
+                botAddress: bot.appAddress,
+                cached: true,
+            })
+        }
+
+        // Fetch from chain
+        const holders = await getMembershipNftHolderAddresses(
+            bot as AnyBot,
+            nftAddress as Address,
+        )
 
         const uniqueRecipients = await getUniqueRecipientAddresses(
             bot as AnyBot,
@@ -1023,14 +1069,16 @@ app.get('/api/holders', async (c) => {
             },
         )
 
-        // Tax holder count from database
-        const taxHolderCount = getTaxHolderCount()
+        // Store in DB cache
+        saveSpaceHolders(nftAddress, uniqueRecipients.map(a => a as string))
+        console.log(`[Holders] Cached ${uniqueRecipients.length} holders for ${nftAddress}`)
 
         return c.json({
             count: uniqueRecipients.length,
             nftAddress,
-            taxHolderCount,
+            taxHolderCount: getTaxHolderCount(),
             botAddress: bot.appAddress,
+            cached: false,
         })
     } catch (err) {
         console.error('Failed to fetch holders:', err)
@@ -1042,7 +1090,11 @@ app.get('/api/holders', async (c) => {
 app.post('/api/airdrop', async (c) => {
     try {
         const body = await c.req.json()
-        const { airdropType, totalAmount, creatorAddress, currency, currencySymbol: rawSymbol, spaceId, currencyDecimals: rawDecimals, creatorDisplayName } = body
+        const {
+            airdropType, totalAmount, creatorAddress, currency,
+            currencySymbol: rawSymbol, spaceId, currencyDecimals: rawDecimals,
+            creatorDisplayName, title: rawTitle, description: rawDescription,
+        } = body
 
         if (!airdropType || !totalAmount || !creatorAddress) {
             return c.json({ error: 'Missing required fields' }, 400)
@@ -1071,9 +1123,6 @@ app.post('/api/airdrop', async (c) => {
         let spaceNftAddress: string | undefined
 
         if (airdropType === 'space') {
-            // Use spaceId from miniapp context as the membership NFT contract
-            // The spaceId may be a raw address or an encoded Towns stream ID
-            // Fall back to env variable for backward compat
             const extractedAddress = spaceId ? extractAddressFromStreamId(spaceId) : null
             const nftAddress = extractedAddress
                 || (process.env.AIRDROP_MEMBERSHIP_NFT_ADDRESS ?? '').trim()
@@ -1086,22 +1135,41 @@ app.post('/api/airdrop', async (c) => {
 
             spaceNftAddress = nftAddress
 
-            const holders = await getMembershipNftHolderAddresses(
-                bot as AnyBot,
-                nftAddress as Address,
-            )
-
-            participants = (
-                await getUniqueRecipientAddresses(
+            // Check DB cache for space holders first
+            const cached = getSpaceHolders(nftAddress)
+            if (cached && !isSpaceHoldersStale(nftAddress)) {
+                console.log(`[Airdrop] Using cached ${cached.length} holders for ${nftAddress}`)
+                // Apply exclude filter
+                const excludeSet = new Set(excludeAddresses.map(a => a.toLowerCase()))
+                const botApp = (bot.appAddress ?? '').toLowerCase()
+                const botId = (bot.viem.account.address ?? '').toLowerCase()
+                participants = cached.filter(a => {
+                    const lower = a.toLowerCase()
+                    return lower !== botApp && lower !== botId && !excludeSet.has(lower)
+                })
+            } else {
+                // Fetch from chain
+                const holders = await getMembershipNftHolderAddresses(
                     bot as AnyBot,
-                    holders.map((a) => a as string),
-                    {
-                        excludeAddresses:
-                            excludeAddresses.length > 0 ? excludeAddresses : undefined,
-                        onlyResolved: false,
-                    },
+                    nftAddress as Address,
                 )
-            ).map((a) => a as string)
+
+                participants = (
+                    await getUniqueRecipientAddresses(
+                        bot as AnyBot,
+                        holders.map((a) => a as string),
+                        {
+                            excludeAddresses:
+                                excludeAddresses.length > 0 ? excludeAddresses : undefined,
+                            onlyResolved: false,
+                        },
+                    )
+                ).map((a) => a as string)
+
+                // Save to DB cache
+                saveSpaceHolders(nftAddress, participants)
+                console.log(`[Airdrop] Cached ${participants.length} holders for ${nftAddress}`)
+            }
 
             recipientCount = participants.length
         }
@@ -1135,6 +1203,8 @@ app.post('/api/airdrop', async (c) => {
             status: 'pending',
             participants,
             taxHolders,
+            title: typeof rawTitle === 'string' ? rawTitle.trim().slice(0, 100) : undefined,
+            description: typeof rawDescription === 'string' ? rawDescription.trim().slice(0, 500) : undefined,
             createdAt: Date.now(),
             updatedAt: Date.now(),
         }
@@ -1374,10 +1444,42 @@ app.post('/api/airdrop/:id/cancel', async (c) => {
     return c.json(airdropToResponse(updated))
 })
 
-// List public airdrops (joinable)
+// List public airdrops (joinable — pending or funded only)
 app.get('/api/public-airdrops', (c) => {
     const publicDrops = listPublicAirdrops().map(airdropToResponse)
     return c.json(publicDrops)
+})
+
+// Airdrop history (completed/cancelled/distributing — excludes public pending/funded)
+app.get('/api/airdrop-history', (c) => {
+    const history = listAirdropHistory().map(airdropToResponse)
+    return c.json(history)
+})
+
+// Leaderboard
+app.get('/api/leaderboard', (c) => {
+    const topRecipients = getTopRecipients(5)
+    const topCreators = getTopCreators(5)
+    const topSpaces = getTopSpaces(5)
+
+    // Enrich with display names
+    const allAddresses = [
+        ...topRecipients.map(r => r.address),
+        ...topCreators.map(r => r.address),
+    ]
+    const names = getParticipantNames(allAddresses)
+
+    return c.json({
+        topRecipients: topRecipients.map(r => ({
+            ...r,
+            displayName: names.get(r.address.toLowerCase()) || null,
+        })),
+        topCreators: topCreators.map(r => ({
+            ...r,
+            displayName: names.get(r.address.toLowerCase()) || null,
+        })),
+        topSpaces,
+    })
 })
 
 // List airdrops created by a specific user

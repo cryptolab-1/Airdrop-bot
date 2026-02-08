@@ -375,6 +375,68 @@
             margin-top: 8px;
             text-align: center;
         }
+
+        /* ---- Leaderboard ---- */
+        .leaderboard-section { margin-bottom: 20px; }
+        .leaderboard-section h3 {
+            font-size: 14px;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            opacity: 0.6;
+            margin-bottom: 8px;
+        }
+        .leaderboard-item {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 10px 12px;
+            background: rgba(139,92,246,0.06);
+            border: 1px solid rgba(139,92,246,0.15);
+            border-radius: 10px;
+            margin-bottom: 6px;
+            font-size: 13px;
+        }
+        .leaderboard-rank {
+            font-weight: 800;
+            font-size: 16px;
+            color: #a78bfa;
+            min-width: 24px;
+            text-align: center;
+        }
+        .leaderboard-rank.gold { color: #fbbf24; }
+        .leaderboard-rank.silver { color: #94a3b8; }
+        .leaderboard-rank.bronze { color: #d97706; }
+        .leaderboard-name {
+            flex: 1;
+            font-weight: 600;
+            color: #e0d4f5;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        .leaderboard-stat {
+            font-size: 12px;
+            color: #a78bfa;
+            font-weight: 600;
+            white-space: nowrap;
+        }
+
+        /* ---- Link preview ---- */
+        .link-preview {
+            background: rgba(59,130,246,0.08);
+            border: 1px solid rgba(59,130,246,0.2);
+            border-radius: 8px;
+            padding: 10px 12px;
+            margin-top: 6px;
+            font-size: 12px;
+            word-break: break-all;
+        }
+        .link-preview a {
+            color: #93c5fd;
+            text-decoration: none;
+        }
+        .link-preview a:hover { text-decoration: underline; }
     </style>
 </head>
 <body>
@@ -396,6 +458,8 @@
 
             <button id="btnCreateAirdrop">Create an Airdrop</button>
             <button id="btnJoinPublic" class="secondary" style="margin-top:8px;">Join a Public Airdrop</button>
+            <button id="btnHistory" class="secondary" style="margin-top:8px;">Airdrop History</button>
+            <button id="btnLeaderboard" class="secondary" style="margin-top:8px;">Leaderboard</button>
         </div>
 
         <!-- ===================== CREATE AIRDROP SCREEN ===================== -->
@@ -410,6 +474,19 @@
                         <option value="space">Airdrop Space Members</option>
                         <option value="public">Public Airdrop</option>
                     </select>
+                </div>
+
+                <!-- Public airdrop: Title & Description -->
+                <div id="publicTitleGroup" class="hidden">
+                    <div class="form-group">
+                        <label>Title (optional)</label>
+                        <input type="text" id="airdropTitleInput" placeholder="e.g. Community Reward" maxlength="100" />
+                    </div>
+                    <div class="form-group">
+                        <label>Description (optional)</label>
+                        <textarea id="airdropDescInput" placeholder="Describe your airdrop..." rows="2" maxlength="500" style="resize:vertical;"></textarea>
+                        <div class="hint">If you paste a link, a preview will be shown</div>
+                    </div>
                 </div>
 
                 <!-- Space members: holder info -->
@@ -628,6 +705,9 @@
                 <button class="back-btn" id="statusBackBtn">&larr; Back</button>
                 <h2>Airdrop Status</h2>
 
+                <div id="statusTitle" class="hidden" style="font-weight:700; font-size:16px; color:#e0d4f5; text-align:center; margin-bottom:4px;"></div>
+                <div id="statusDesc" class="hidden" style="font-size:13px; opacity:0.7; text-align:center; margin-bottom:10px;"></div>
+
                 <div style="text-align:center; margin:12px 0;">
                     <span class="status-badge" id="statusBadge">PENDING</span>
                 </div>
@@ -691,6 +771,56 @@
             </div>
         </div>
 
+        <!-- ===================== LEADERBOARD SCREEN ===================== -->
+        <div id="leaderboardScreen" class="hidden">
+            <div class="card">
+                <button class="back-btn" id="leaderboardBackBtn">&larr; Back</button>
+                <h2>Leaderboard</h2>
+
+                <div id="leaderboardLoading" style="text-align:center; padding:20px 0;">
+                    <div class="spinner-sm"></div> Loading leaderboard...
+                </div>
+
+                <div id="leaderboardContent" class="hidden">
+                    <div class="leaderboard-section">
+                        <h3>Top Airdrop Recipients</h3>
+                        <div id="lbRecipients"></div>
+                        <div id="lbRecipientsEmpty" class="empty-state hidden" style="padding:12px;">No data yet</div>
+                    </div>
+                    <div class="leaderboard-section">
+                        <h3>Top Airdrop Creators</h3>
+                        <div id="lbCreators"></div>
+                        <div id="lbCreatorsEmpty" class="empty-state hidden" style="padding:12px;">No data yet</div>
+                    </div>
+                    <div class="leaderboard-section">
+                        <h3>Top Airdropped Towns</h3>
+                        <div id="lbSpaces"></div>
+                        <div id="lbSpacesEmpty" class="empty-state hidden" style="padding:12px;">No data yet</div>
+                    </div>
+                </div>
+
+                <div id="leaderboardError" class="error hidden"></div>
+            </div>
+        </div>
+
+        <!-- ===================== HISTORY SCREEN ===================== -->
+        <div id="historyScreen" class="hidden">
+            <div class="card">
+                <button class="back-btn" id="historyBackBtn">&larr; Back</button>
+                <h2>Airdrop History</h2>
+                <div class="subtitle">All completed and past airdrops</div>
+
+                <div id="historyLoading" style="text-align:center; padding:20px 0;">
+                    <div class="spinner-sm"></div> Loading history...
+                </div>
+
+                <div id="historyList"></div>
+                <div id="historyEmpty" class="empty-state hidden">No airdrop history yet.</div>
+
+                <div id="historyError" class="error hidden"></div>
+            </div>
+        </div>
+
     </div>
 
     <script type="module">
@@ -709,7 +839,10 @@
         let botTreasuryAddress = ''
         let pollInterval = null
         let taxPercent = 2 // default, updated from /api/config
+        let adminTaxPercent = 1
+        let totalTaxPercent = 3
         let taxEnabled = false
+        let adminTaxEnabled = false
 
         // Towns token default address
         const TOWNS_ADDRESS = '0x00000000A22C618fd6b4D7E9A335C4B96B189a38'
@@ -742,7 +875,7 @@
         // ==================================================================
         // Screen navigation
         // ==================================================================
-        const screens = ['homeScreen', 'createScreen', 'depositScreen', 'publicScreen', 'statusScreen']
+        const screens = ['homeScreen', 'createScreen', 'depositScreen', 'publicScreen', 'statusScreen', 'leaderboardScreen', 'historyScreen']
 
         function showScreen(name) {
             screens.forEach(id => {
@@ -908,12 +1041,19 @@
             return await res.json()
         }
 
-        async function apiCreateAirdrop(airdropType, totalAmountWei, creatorAddress, currency, decimals, displayName, symbol) {
+        async function apiCreateAirdrop(airdropType, totalAmountWei, creatorAddress, currency, decimals, displayName, symbol, title, description) {
             const spaceAddr = getSpaceAddress()
+            const body = {
+                airdropType, totalAmount: totalAmountWei, creatorAddress,
+                currency, currencySymbol: symbol, spaceId: spaceAddr,
+                currencyDecimals: decimals, creatorDisplayName: displayName,
+            }
+            if (title) body.title = title
+            if (description) body.description = description
             const res = await fetch('/api/airdrop', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ airdropType, totalAmount: totalAmountWei, creatorAddress, currency, currencySymbol: symbol, spaceId: spaceAddr, currencyDecimals: decimals, creatorDisplayName: displayName })
+                body: JSON.stringify(body)
             })
             if (!res.ok) {
                 const err = await res.json().catch(() => ({}))
@@ -989,6 +1129,16 @@
             loadPublicAirdrops()
         })
 
+        document.getElementById('btnHistory').addEventListener('click', () => {
+            showScreen('historyScreen')
+            loadHistory()
+        })
+
+        document.getElementById('btnLeaderboard').addEventListener('click', () => {
+            showScreen('leaderboardScreen')
+            loadLeaderboard()
+        })
+
         // ==================================================================
         // CREATE AIRDROP SCREEN
         // ==================================================================
@@ -999,10 +1149,12 @@
             if (type === 'space') {
                 document.getElementById('holderSection').classList.remove('hidden')
                 document.getElementById('perPersonSummary').classList.remove('hidden')
+                document.getElementById('publicTitleGroup').classList.add('hidden')
                 if (!holdersLoaded) fetchHolders()
             } else {
                 document.getElementById('holderSection').classList.add('hidden')
                 document.getElementById('perPersonSummary').classList.add('hidden')
+                document.getElementById('publicTitleGroup').classList.remove('hidden')
             }
             updatePerPerson()
             validateCreateForm()
@@ -1280,6 +1432,8 @@
 
             try {
                 await ensureTreasuryAddress()
+                const title = document.getElementById('airdropTitleInput').value.trim()
+                const desc = document.getElementById('airdropDescInput').value.trim()
                 const airdrop = await apiCreateAirdrop(
                     type,
                     wei,
@@ -1287,7 +1441,9 @@
                     currency,
                     getActiveDecimals(),
                     context?.user?.displayName || '',
-                    getTokenSymbol()
+                    getTokenSymbol(),
+                    type === 'public' ? title : '',
+                    type === 'public' ? desc : ''
                 )
                 currentAirdrop = airdrop
                 await openDepositScreen(airdrop, amount)
@@ -1535,9 +1691,18 @@
                         p.toLowerCase() === userId || (userAddr && p.toLowerCase() === userAddr)
                     )
 
+                    const titleHtml = drop.title
+                        ? `<div style="font-weight:700; font-size:15px; color:#e0d4f5; margin-bottom:4px;">${escapeHtml(drop.title)}</div>`
+                        : ''
+                    const descHtml = drop.description
+                        ? `<div style="font-size:12px; opacity:0.7; margin-bottom:6px;">${renderDescription(drop.description)}</div>`
+                        : ''
+
                     const card = document.createElement('div')
                     card.className = 'airdrop-card'
                     card.innerHTML = `
+                        ${titleHtml}
+                        ${descHtml}
                         <div class="airdrop-card-header">
                             <span class="airdrop-card-title">${formatTokens(drop.totalAmount, drop.currencyDecimals ?? 18)} ${drop.currencySymbol ? '$' + drop.currencySymbol : 'tokens'}</span>
                             <span class="status-badge status-${drop.status}">${drop.status.toUpperCase()}</span>
@@ -1762,6 +1927,163 @@
                     console.error('Poll error:', err)
                 }
             }, 3000)
+        }
+
+        // ==================================================================
+        // HELPER: HTML escaping & link preview
+        // ==================================================================
+        function escapeHtml(str) {
+            const div = document.createElement('div')
+            div.textContent = str
+            return div.innerHTML
+        }
+
+        function renderDescription(desc) {
+            // Detect URLs and turn them into clickable links with a small preview
+            const urlRegex = /(https?:\/\/[^\s<]+)/g
+            const escaped = escapeHtml(desc)
+            const withLinks = escaped.replace(urlRegex, (url) => {
+                // Extract domain for preview
+                let domain = ''
+                try { domain = new URL(url).hostname } catch { domain = url }
+                return `<a href="${url}" target="_blank" rel="noopener">${url}</a>`
+            })
+
+            // If the entire description is a single URL, show a link preview card
+            const trimmed = desc.trim()
+            if (urlRegex.test(trimmed) && trimmed.match(urlRegex)?.length === 1 && trimmed === trimmed.match(urlRegex)[0]) {
+                let domain = ''
+                try { domain = new URL(trimmed).hostname } catch { domain = trimmed }
+                return `<div class="link-preview"><a href="${escapeHtml(trimmed)}" target="_blank" rel="noopener">${escapeHtml(domain)}</a><br/><span style="opacity:0.5; font-size:11px;">${escapeHtml(trimmed)}</span></div>`
+            }
+
+            return withLinks
+        }
+
+        // ==================================================================
+        // LEADERBOARD SCREEN
+        // ==================================================================
+        document.getElementById('leaderboardBackBtn').addEventListener('click', () => {
+            showScreen('homeScreen')
+        })
+
+        async function loadLeaderboard() {
+            const loadingEl = document.getElementById('leaderboardLoading')
+            const contentEl = document.getElementById('leaderboardContent')
+            hideError('leaderboardError')
+            loadingEl.classList.remove('hidden')
+            contentEl.classList.add('hidden')
+
+            try {
+                const res = await fetch('/api/leaderboard')
+                if (!res.ok) throw new Error('Failed to load leaderboard')
+                const data = await res.json()
+                loadingEl.classList.add('hidden')
+                contentEl.classList.remove('hidden')
+
+                // Render recipients
+                renderLeaderboardList('lbRecipients', 'lbRecipientsEmpty', data.topRecipients, (item) => {
+                    return `${item.displayName || shortAddr(item.address)} <span class="leaderboard-stat">${item.count} airdrop${item.count !== 1 ? 's' : ''}</span>`
+                })
+
+                // Render creators
+                renderLeaderboardList('lbCreators', 'lbCreatorsEmpty', data.topCreators, (item) => {
+                    return `${item.displayName || shortAddr(item.address)} <span class="leaderboard-stat">${item.count} created</span>`
+                })
+
+                // Render spaces
+                renderLeaderboardList('lbSpaces', 'lbSpacesEmpty', data.topSpaces, (item) => {
+                    return `${shortAddr(item.spaceNftAddress)} <span class="leaderboard-stat">${item.count} airdrop${item.count !== 1 ? 's' : ''}</span>`
+                })
+            } catch (err) {
+                loadingEl.classList.add('hidden')
+                showError('leaderboardError', err.message)
+            }
+        }
+
+        function renderLeaderboardList(listId, emptyId, items, renderItem) {
+            const listEl = document.getElementById(listId)
+            const emptyEl = document.getElementById(emptyId)
+            listEl.innerHTML = ''
+
+            if (!items || items.length === 0) {
+                emptyEl.classList.remove('hidden')
+                return
+            }
+            emptyEl.classList.add('hidden')
+
+            items.forEach((item, idx) => {
+                const rankClass = idx === 0 ? 'gold' : idx === 1 ? 'silver' : idx === 2 ? 'bronze' : ''
+                const el = document.createElement('div')
+                el.className = 'leaderboard-item'
+                el.innerHTML = `
+                    <span class="leaderboard-rank ${rankClass}">${idx + 1}</span>
+                    <span class="leaderboard-name">${renderItem(item)}</span>
+                `
+                listEl.appendChild(el)
+            })
+        }
+
+        // ==================================================================
+        // HISTORY SCREEN
+        // ==================================================================
+        document.getElementById('historyBackBtn').addEventListener('click', () => {
+            showScreen('homeScreen')
+        })
+
+        async function loadHistory() {
+            const listEl = document.getElementById('historyList')
+            const emptyEl = document.getElementById('historyEmpty')
+            const loadingEl = document.getElementById('historyLoading')
+            hideError('historyError')
+            listEl.innerHTML = ''
+            emptyEl.classList.add('hidden')
+            loadingEl.classList.remove('hidden')
+
+            try {
+                const res = await fetch('/api/airdrop-history')
+                if (!res.ok) throw new Error('Failed to load history')
+                const drops = await res.json()
+                loadingEl.classList.add('hidden')
+
+                if (drops.length === 0) {
+                    emptyEl.classList.remove('hidden')
+                    return
+                }
+
+                drops.forEach(drop => {
+                    const sym = drop.currencySymbol ? '$' + drop.currencySymbol : 'tokens'
+                    const dec = drop.currencyDecimals ?? 18
+                    const date = new Date(drop.createdAt).toLocaleDateString()
+
+                    const titleHtml = drop.title
+                        ? `<div style="font-weight:700; font-size:14px; color:#e0d4f5; margin-bottom:2px;">${escapeHtml(drop.title)}</div>`
+                        : ''
+                    const descHtml = drop.description
+                        ? `<div style="font-size:11px; opacity:0.6; margin-bottom:4px;">${renderDescription(drop.description)}</div>`
+                        : ''
+
+                    const card = document.createElement('div')
+                    card.className = 'airdrop-card'
+                    card.innerHTML = `
+                        ${titleHtml}
+                        ${descHtml}
+                        <div class="airdrop-card-header">
+                            <span class="airdrop-card-title">${formatTokens(drop.totalAmount, dec)} ${sym}</span>
+                            <span class="status-badge status-${drop.status}">${drop.status.toUpperCase()}</span>
+                        </div>
+                        <div class="airdrop-card-detail">${drop.airdropType === 'space' ? 'Space Members' : 'Public'} &middot; ${drop.recipientCount} recipient${drop.recipientCount !== 1 ? 's' : ''}</div>
+                        <div class="airdrop-card-detail" style="opacity:0.4;">By ${drop.creatorName || shortAddr(drop.creatorAddress)} &middot; ${date}</div>
+                        <div class="airdrop-card-actions">
+                            <button class="sm secondary" onclick="viewDrop('${drop.id}')">View Details</button>
+                        </div>
+                    `
+                    listEl.appendChild(card)
+                })
+            } catch (err) {
+                loadingEl.classList.add('hidden')
+                showError('historyError', err.message)
+            }
         }
 
         // ==================================================================

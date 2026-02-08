@@ -36,6 +36,8 @@ export interface Airdrop {
     distributionTxHash?: string
     taxDistributionTxHash?: string
     adminTaxDistributionTxHash?: string
+    title?: string
+    description?: string
     createdAt: number
     updatedAt: number
 }
@@ -67,6 +69,8 @@ interface AirdropRow {
     distribution_tx_hash: string | null
     tax_distribution_tx_hash: string | null
     admin_tax_distribution_tx_hash: string | null
+    title: string | null
+    description: string | null
     created_at: number
     updated_at: number
 }
@@ -125,6 +129,8 @@ export function initDb(): void {
             distribution_tx_hash     TEXT,
             tax_distribution_tx_hash TEXT,
             admin_tax_distribution_tx_hash TEXT,
+            title                    TEXT,
+            description              TEXT,
             created_at               INTEGER NOT NULL,
             updated_at               INTEGER NOT NULL
         )
@@ -142,6 +148,12 @@ export function initDb(): void {
     if (!colNames.has('admin_tax_distribution_tx_hash')) {
         db.run("ALTER TABLE airdrops ADD COLUMN admin_tax_distribution_tx_hash TEXT")
     }
+    if (!colNames.has('title')) {
+        db.run("ALTER TABLE airdrops ADD COLUMN title TEXT")
+    }
+    if (!colNames.has('description')) {
+        db.run("ALTER TABLE airdrops ADD COLUMN description TEXT")
+    }
 
     db.run(`
         CREATE TABLE IF NOT EXISTS participant_names (
@@ -155,6 +167,27 @@ export function initDb(): void {
         CREATE TABLE IF NOT EXISTS tax_holders (
             address    TEXT PRIMARY KEY,
             updated_at INTEGER NOT NULL
+        )
+    `)
+
+    // Space NFT holders cache — refreshed every 24h per space
+    db.run(`
+        CREATE TABLE IF NOT EXISTS space_holders (
+            nft_address    TEXT NOT NULL,
+            holder_address TEXT NOT NULL,
+            updated_at     INTEGER NOT NULL,
+            PRIMARY KEY (nft_address, holder_address)
+        )
+    `)
+
+    // Token info cache — persisted permanently (no expiry needed)
+    db.run(`
+        CREATE TABLE IF NOT EXISTS token_cache (
+            address    TEXT PRIMARY KEY,
+            name       TEXT NOT NULL DEFAULT '',
+            symbol     TEXT NOT NULL DEFAULT '',
+            decimals   INTEGER NOT NULL DEFAULT 18,
+            created_at INTEGER NOT NULL
         )
     `)
 
@@ -189,6 +222,8 @@ function rowToAirdrop(row: AirdropRow): Airdrop {
         distributionTxHash: row.distribution_tx_hash ?? undefined,
         taxDistributionTxHash: row.tax_distribution_tx_hash ?? undefined,
         adminTaxDistributionTxHash: row.admin_tax_distribution_tx_hash ?? undefined,
+        title: row.title ?? undefined,
+        description: row.description ?? undefined,
         createdAt: row.created_at,
         updatedAt: row.updated_at,
     }
@@ -208,6 +243,7 @@ const SAVE_SQL = `
         participants, tax_holders,
         deposit_tx_hash, distribution_tx_hash,
         tax_distribution_tx_hash, admin_tax_distribution_tx_hash,
+        title, description,
         created_at, updated_at
     ) VALUES (
         $id, $creator_address, $airdrop_type, $space_nft_address,
@@ -218,6 +254,7 @@ const SAVE_SQL = `
         $participants, $tax_holders,
         $deposit_tx_hash, $distribution_tx_hash,
         $tax_distribution_tx_hash, $admin_tax_distribution_tx_hash,
+        $title, $description,
         $created_at, $updated_at
     )
 `
@@ -246,6 +283,8 @@ export function saveAirdrop(a: Airdrop): void {
         $distribution_tx_hash: a.distributionTxHash ?? null,
         $tax_distribution_tx_hash: a.taxDistributionTxHash ?? null,
         $admin_tax_distribution_tx_hash: a.adminTaxDistributionTxHash ?? null,
+        $title: a.title ?? null,
+        $description: a.description ?? null,
         $created_at: a.createdAt,
         $updated_at: a.updatedAt,
     })
@@ -275,6 +314,8 @@ export function updateAirdrop(id: string, fields: Partial<Airdrop>): void {
     if (fields.amountPerRecipient !== undefined) mapping.amountPerRecipient = { col: 'amount_per_recipient', val: fields.amountPerRecipient }
     if (fields.updatedAt !== undefined) mapping.updatedAt = { col: 'updated_at', val: fields.updatedAt }
     if (fields.taxHolders !== undefined) mapping.taxHolders = { col: 'tax_holders', val: JSON.stringify(fields.taxHolders) }
+    if (fields.title !== undefined) mapping.title = { col: 'title', val: fields.title }
+    if (fields.description !== undefined) mapping.description = { col: 'description', val: fields.description }
 
     const entries = Object.values(mapping)
     if (entries.length === 0) return
@@ -288,7 +329,7 @@ export function updateAirdrop(id: string, fields: Partial<Airdrop>): void {
 
 export function listPublicAirdrops(): Airdrop[] {
     const rows = db.query(
-        `SELECT * FROM airdrops WHERE airdrop_type = 'public' AND status != 'cancelled' ORDER BY created_at DESC`,
+        `SELECT * FROM airdrops WHERE airdrop_type = 'public' AND status IN ('pending','funded') ORDER BY created_at DESC`,
     ).all() as AirdropRow[]
     return rows.map(rowToAirdrop)
 }
@@ -300,9 +341,99 @@ export function listAirdropsByCreator(address: string): Airdrop[] {
     return rows.map(rowToAirdrop)
 }
 
+export function listAirdropHistory(): Airdrop[] {
+    // All airdrops except public ones that are still pending/funded (those stay in "Join Public")
+    const rows = db.query(`
+        SELECT * FROM airdrops
+        WHERE NOT (airdrop_type = 'public' AND status IN ('pending','funded'))
+        ORDER BY created_at DESC
+        LIMIT 100
+    `).all() as AirdropRow[]
+    return rows.map(rowToAirdrop)
+}
+
 export function getAirdropCount(): number {
     const row = db.query('SELECT COUNT(*) as cnt FROM airdrops').get() as { cnt: number }
     return row.cnt
+}
+
+// ============================================================================
+// Leaderboard queries
+// ============================================================================
+
+interface LeaderboardEntry {
+    address: string
+    count: number
+    totalAmount: string
+}
+
+interface SpaceLeaderboardEntry {
+    spaceNftAddress: string
+    count: number
+    totalAmount: string
+}
+
+/** Top N users who received the most airdrops (appeared as participants). */
+export function getTopRecipients(limit = 5): LeaderboardEntry[] {
+    // We need to unnest the JSON participants array. In SQLite, we use json_each.
+    const rows = db.query(`
+        SELECT j.value AS address,
+               COUNT(DISTINCT a.id) AS count,
+               SUM(CAST(a.amount_per_recipient AS INTEGER)) AS total_amount
+        FROM airdrops a, json_each(a.participants) j
+        WHERE a.status = 'completed'
+        GROUP BY LOWER(j.value)
+        ORDER BY count DESC
+        LIMIT $limit
+    `).all({ $limit: limit }) as { address: string; count: number; total_amount: number | null }[]
+
+    return rows.map(r => ({
+        address: r.address,
+        count: r.count,
+        totalAmount: String(r.total_amount ?? 0),
+    }))
+}
+
+/** Top N airdrop creators by number of completed airdrops. */
+export function getTopCreators(limit = 5): LeaderboardEntry[] {
+    const rows = db.query(`
+        SELECT creator_address AS address,
+               COUNT(*) AS count,
+               SUM(CAST(total_amount AS INTEGER)) AS total_amount
+        FROM airdrops
+        WHERE status = 'completed'
+        GROUP BY LOWER(creator_address)
+        ORDER BY count DESC
+        LIMIT $limit
+    `).all({ $limit: limit }) as { address: string; count: number; total_amount: number | null }[]
+
+    return rows.map(r => ({
+        address: r.address,
+        count: r.count,
+        totalAmount: String(r.total_amount ?? 0),
+    }))
+}
+
+/** Top N spaces (by NFT address) that received the most airdrops. */
+export function getTopSpaces(limit = 5): SpaceLeaderboardEntry[] {
+    const rows = db.query(`
+        SELECT space_nft_address,
+               COUNT(*) AS count,
+               SUM(CAST(total_amount AS INTEGER)) AS total_amount
+        FROM airdrops
+        WHERE status = 'completed'
+          AND space_nft_address IS NOT NULL
+          AND space_nft_address != ''
+        GROUP BY LOWER(space_nft_address)
+        ORDER BY count DESC
+        LIMIT $limit
+    `).all({ $limit: limit }) as { space_nft_address: string; count: number; total_amount: number | null }[]
+
+    return rows.map(r => ({
+        spaceNftAddress: r.space_nft_address,
+        count: r.count,
+        totalAmount: String(r.total_amount ?? 0),
+    }))
 }
 
 // ============================================================================
@@ -371,4 +502,80 @@ export function getTaxHolderCount(): number {
 export function getTaxHoldersLastUpdated(): number | null {
     const row = db.query('SELECT MAX(updated_at) as ts FROM tax_holders').get() as { ts: number | null }
     return row?.ts ?? null
+}
+
+// ============================================================================
+// Space NFT holders cache (per space, refreshed every 24h)
+// ============================================================================
+
+const SPACE_HOLDER_REFRESH_MS = 24 * 60 * 60 * 1000 // 24h
+
+export function saveSpaceHolders(nftAddress: string, holders: string[]): void {
+    const now = Date.now()
+    const addr = nftAddress.toLowerCase()
+    const tx = db.transaction(() => {
+        db.run('DELETE FROM space_holders WHERE nft_address = $addr', { $addr: addr })
+        const stmt = db.prepare(
+            'INSERT INTO space_holders (nft_address, holder_address, updated_at) VALUES ($nft, $holder, $ts)',
+        )
+        for (const h of holders) {
+            stmt.run({ $nft: addr, $holder: h.toLowerCase(), $ts: now })
+        }
+    })
+    tx()
+}
+
+export function getSpaceHolders(nftAddress: string): string[] | null {
+    const addr = nftAddress.toLowerCase()
+    const rows = db.query(
+        'SELECT holder_address FROM space_holders WHERE nft_address = $addr',
+    ).all({ $addr: addr }) as { holder_address: string }[]
+    if (rows.length === 0) return null
+    return rows.map((r) => r.holder_address)
+}
+
+export function getSpaceHoldersLastUpdated(nftAddress: string): number | null {
+    const addr = nftAddress.toLowerCase()
+    const row = db.query(
+        'SELECT MAX(updated_at) as ts FROM space_holders WHERE nft_address = $addr',
+    ).get({ $addr: addr }) as { ts: number | null }
+    return row?.ts ?? null
+}
+
+export function isSpaceHoldersStale(nftAddress: string): boolean {
+    const lastUpdated = getSpaceHoldersLastUpdated(nftAddress)
+    if (!lastUpdated) return true
+    return Date.now() - lastUpdated > SPACE_HOLDER_REFRESH_MS
+}
+
+// ============================================================================
+// Token info cache (permanent — no expiry)
+// ============================================================================
+
+export interface CachedTokenInfo {
+    address: string
+    name: string
+    symbol: string
+    decimals: number
+}
+
+export function saveTokenInfo(address: string, name: string, symbol: string, decimals: number): void {
+    db.run(
+        `INSERT OR REPLACE INTO token_cache (address, name, symbol, decimals, created_at)
+         VALUES ($addr, $name, $symbol, $decimals, $ts)`,
+        {
+            $addr: address.toLowerCase(),
+            $name: name,
+            $symbol: symbol,
+            $decimals: decimals,
+            $ts: Date.now(),
+        },
+    )
+}
+
+export function getTokenInfo(address: string): CachedTokenInfo | null {
+    const row = db.query(
+        'SELECT address, name, symbol, decimals FROM token_cache WHERE address = $addr',
+    ).get({ $addr: address.toLowerCase() }) as { address: string; name: string; symbol: string; decimals: number } | null
+    return row ?? null
 }
