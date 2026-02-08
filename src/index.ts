@@ -813,8 +813,11 @@ async function fetchAndCacheImage() {
         const res = await fetch(RIVER_IMAGE_URL)
         if (res.ok) {
             const buf = await res.arrayBuffer()
-            cachedImage = { data: new Uint8Array(buf), contentType: res.headers.get('content-type') || 'image/png' }
-            console.log(`[Image] Cached (${cachedImage.data.length} bytes)`)
+            const ct = res.headers.get('content-type') || 'image/png'
+            cachedImage = { data: new Uint8Array(buf), contentType: ct }
+            console.log(`[Image] Cached (${cachedImage.data.length} bytes, ${ct})`)
+        } else {
+            console.warn(`[Image] Fetch failed: ${res.status} ${res.statusText}`)
         }
     } catch (err) {
         console.warn('[Image] Fetch error:', err)
@@ -824,10 +827,13 @@ await fetchAndCacheImage()
 
 function serveImage(c: any) {
     if (!cachedImage) return c.redirect(RIVER_IMAGE_URL, 302)
-    c.header('Content-Type', cachedImage.contentType)
-    c.header('Content-Length', cachedImage.data.length.toString())
-    c.header('Cache-Control', 'public, max-age=86400')
-    return c.body(cachedImage.data)
+    return new Response(cachedImage.data.buffer, {
+        headers: {
+            'Content-Type': cachedImage.contentType,
+            'Content-Length': cachedImage.data.length.toString(),
+            'Cache-Control': 'public, max-age=86400',
+        },
+    })
 }
 
 app.get('/icon.png', (c) => serveImage(c))
@@ -947,7 +953,7 @@ app.get('/api/token-info', async (c) => {
         }
 
         if (!name && !symbol) {
-            return c.json({ error: 'Not a valid ERC20 token' }, 400)
+            return c.json({ error: ' ERC20 token not found' }, 400)
         }
 
         // Store in DB cache for future lookups
