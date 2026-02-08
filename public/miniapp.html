@@ -1848,6 +1848,7 @@
             const userAddr = context?.towns?.user?.address?.toLowerCase() || ''
             const isCreator = airdrop.creatorAddress?.toLowerCase() === userId
             const isPublic = airdrop.airdropType === 'public'
+            const maxP = airdrop.maxParticipants || 0
 
             // Join section (public, funded, not creator, not already joined)
             const joinSection = document.getElementById('statusJoinSection')
@@ -1878,7 +1879,6 @@
             }
 
             // Max participants
-            const maxP = airdrop.maxParticipants || 0
             if (maxP > 0) {
                 document.getElementById('statusMaxParticipants').textContent = `${airdrop.recipientCount} / ${maxP}`
                 document.getElementById('statusMaxParticipantsRow').classList.remove('hidden')
