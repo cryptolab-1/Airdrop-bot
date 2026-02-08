@@ -1816,7 +1816,7 @@
                             ${canJoin && !alreadyJoined && drop.maxParticipants > 0 && drop.recipientCount >= drop.maxParticipants ? `<button class="sm secondary" disabled>Full</button>` : ''}
                             ${alreadyJoined ? `<button class="sm joined" disabled>&#10003; Joined</button>` : ''}
                             <button class="sm secondary" onclick="viewDrop('${drop.id}')">View Details</button>
-                            ${isAdmin && !isCreator ? `<button class="sm danger" onclick="adminCancelDrop('${drop.id}')">Cancel</button>` : ''}
+                            ${isAdmin ? `<button class="sm danger" onclick="adminCancelDrop('${drop.id}', this)">Cancel</button>` : ''}
                         </div>
                     `
                     listEl.appendChild(card)
@@ -1862,8 +1862,19 @@
             }
         }
 
-        window.adminCancelDrop = async function(id) {
-            if (!confirm('Admin: Cancel this airdrop? Funded airdrops will be refunded to the creator.')) return
+        window.adminCancelDrop = async function(id, btnEl) {
+            // Two-click confirmation: first click shows confirm text, second click executes
+            if (!btnEl.dataset.confirmed) {
+                btnEl.dataset.confirmed = 'true'
+                btnEl.textContent = 'Confirm Cancel?'
+                btnEl.style.opacity = '1'
+                setTimeout(() => {
+                    if (btnEl) { delete btnEl.dataset.confirmed; btnEl.textContent = 'Cancel' }
+                }, 4000)
+                return
+            }
+            btnEl.disabled = true
+            btnEl.textContent = 'Cancelling...'
             try {
                 const userId = context?.towns?.user?.userId || ''
                 const res = await fetch(`/api/airdrop/${id}/admin-cancel`, {
@@ -1873,14 +1884,12 @@
                 })
                 const data = await res.json()
                 if (!res.ok) throw new Error(data.error || 'Failed to cancel')
-                if (data.refundTxHash) {
-                    alert(`Airdrop cancelled. Refund tx: ${data.refundTxHash}`)
-                } else {
-                    alert('Airdrop cancelled.')
-                }
                 loadPublicAirdrops()
             } catch (err) {
-                alert(err.message)
+                btnEl.disabled = false
+                btnEl.textContent = 'Cancel'
+                delete btnEl.dataset.confirmed
+                showError('publicError', err.message)
             }
         }
 
@@ -2053,7 +2062,7 @@
 
             // Admin cancel section (admin, not completed/distributing)
             const adminSection = document.getElementById('statusAdminSection')
-            if (isAdmin && !isCreator && airdrop.status !== 'completed' && airdrop.status !== 'distributing' && airdrop.status !== 'cancelled') {
+            if (isAdmin && airdrop.status !== 'completed' && airdrop.status !== 'distributing' && airdrop.status !== 'cancelled') {
                 adminSection.classList.remove('hidden')
                 const acBtn = document.getElementById('statusAdminCancelBtn')
                 acBtn.textContent = airdrop.status === 'funded'
@@ -2172,12 +2181,22 @@
             }
         })
 
-        // Admin cancel from status screen
+        // Admin cancel from status screen (two-click confirmation)
         document.getElementById('statusAdminCancelBtn').addEventListener('click', async () => {
             if (!currentAirdrop) return
-            if (!confirm('Admin: Cancel this airdrop? Funded airdrops will be refunded.')) return
-            hideError('statusError')
             const btn = document.getElementById('statusAdminCancelBtn')
+
+            // First click: ask confirmation
+            if (!btn.dataset.confirmed) {
+                btn.dataset.confirmed = 'true'
+                btn.textContent = 'Confirm Cancel?'
+                setTimeout(() => {
+                    if (btn) { delete btn.dataset.confirmed; btn.textContent = currentAirdrop?.status === 'funded' ? 'Admin: Cancel & Refund' : 'Admin: Cancel' }
+                }, 4000)
+                return
+            }
+
+            hideError('statusError')
             btn.disabled = true
             btn.textContent = currentAirdrop.status === 'funded' ? 'Refunding...' : 'Canceling...'
             try {
@@ -2200,7 +2219,8 @@
                 showError('statusError', err.message)
             } finally {
                 btn.disabled = false
-                btn.textContent = 'Admin: Cancel & Refund'
+                delete btn.dataset.confirmed
+                btn.textContent = currentAirdrop?.status === 'funded' ? 'Admin: Cancel & Refund' : 'Admin: Cancel'
             }
         })
 
@@ -2400,8 +2420,14 @@
         // ADMIN RESET HANDLERS
         // ==================================================================
         document.getElementById('resetLeaderboardBtn').addEventListener('click', async () => {
-            if (!confirm('Admin: Reset the entire leaderboard? This deletes all completed/cancelled airdrops.')) return
             const btn = document.getElementById('resetLeaderboardBtn')
+            // Two-click confirmation
+            if (!btn.dataset.confirmed) {
+                btn.dataset.confirmed = 'true'
+                btn.textContent = 'Confirm Reset?'
+                setTimeout(() => { if (btn) { delete btn.dataset.confirmed; btn.textContent = 'Reset Leaderboard' } }, 4000)
+                return
+            }
             btn.disabled = true
             btn.textContent = 'Resetting...'
             try {
@@ -2413,19 +2439,25 @@
                 })
                 const data = await res.json()
                 if (!res.ok) throw new Error(data.error || 'Failed to reset')
-                alert(`Leaderboard reset. ${data.deleted} entries removed.`)
                 loadLeaderboard()
             } catch (err) {
-                alert(err.message)
+                showError('leaderboardError', err.message)
             } finally {
                 btn.disabled = false
+                delete btn.dataset.confirmed
                 btn.textContent = 'Reset Leaderboard'
             }
         })
 
         document.getElementById('resetHistoryBtn').addEventListener('click', async () => {
-            if (!confirm('Admin: Clear all airdrop history? This cannot be undone.')) return
             const btn = document.getElementById('resetHistoryBtn')
+            // Two-click confirmation
+            if (!btn.dataset.confirmed) {
+                btn.dataset.confirmed = 'true'
+                btn.textContent = 'Confirm Reset?'
+                setTimeout(() => { if (btn) { delete btn.dataset.confirmed; btn.textContent = 'Reset History' } }, 4000)
+                return
+            }
             btn.disabled = true
             btn.textContent = 'Resetting...'
             try {
@@ -2437,12 +2469,12 @@
                 })
                 const data = await res.json()
                 if (!res.ok) throw new Error(data.error || 'Failed to reset')
-                alert(`History cleared. ${data.deleted} entries removed.`)
                 loadHistory()
             } catch (err) {
-                alert(err.message)
+                showError('historyError', err.message)
             } finally {
                 btn.disabled = false
+                delete btn.dataset.confirmed
                 btn.textContent = 'Reset History'
             }
         })
