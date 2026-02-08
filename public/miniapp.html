@@ -518,8 +518,12 @@
                         <span class="summary-value" id="depositTotal">-</span>
                     </div>
                     <div class="summary-row" id="depositTaxRow">
-                        <span class="summary-label">Tax (<span id="depositTaxPercent">2</span>%)</span>
+                        <span class="summary-label">Holders Tax (<span id="depositTaxPercent">2</span>%)</span>
                         <span class="summary-value" id="depositTaxAmount" style="color:#fbbf24;">-</span>
+                    </div>
+                    <div class="summary-row hidden" id="depositAdminTaxRow">
+                        <span class="summary-label">Admin Tax (<span id="depositAdminTaxPercent">1</span>%)</span>
+                        <span class="summary-value" id="depositAdminTaxAmount" style="color:#a78bfa;">-</span>
                     </div>
                     <div class="summary-row" id="depositNetRow">
                         <span class="summary-label">Net to Recipients</span>
@@ -1286,7 +1290,7 @@
                     getTokenSymbol()
                 )
                 currentAirdrop = airdrop
-                openDepositScreen(airdrop, amount)
+                await openDepositScreen(airdrop, amount)
             } catch (err) {
                 showError('createError', err.message)
             } finally {
