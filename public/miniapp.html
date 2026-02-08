@@ -1815,8 +1815,7 @@
                             ${canJoin && !alreadyJoined && !(drop.maxParticipants > 0 && drop.recipientCount >= drop.maxParticipants) ? `<button class="sm" onclick="joinPublicDrop('${drop.id}')">Join</button>` : ''}
                             ${canJoin && !alreadyJoined && drop.maxParticipants > 0 && drop.recipientCount >= drop.maxParticipants ? `<button class="sm secondary" disabled>Full</button>` : ''}
                             ${alreadyJoined ? `<button class="sm joined" disabled>&#10003; Joined</button>` : ''}
-                            ${isCreator ? `<button class="sm secondary" onclick="managePublicDrop('${drop.id}')">Manage</button>` : ''}
-                            <button class="sm secondary" onclick="viewDrop('${drop.id}')">View</button>
+                            <button class="sm secondary" onclick="viewDrop('${drop.id}')">View Details</button>
                             ${isAdmin && !isCreator ? `<button class="sm danger" onclick="adminCancelDrop('${drop.id}')">Cancel</button>` : ''}
                         </div>
                     `
