@@ -317,11 +317,21 @@ async function getMembershipNftHolderAddresses(
     return getMembershipNftHolderAddressesFromEvents(bot, nftContractAddress)
 }
 
+/** Strip common suffixes like " - Member" from space names */
+function cleanSpaceName(raw: string): string {
+    return raw.replace(/\s*-\s*Member(ship)?$/i, '').trim()
+}
+
 /** Fetch the space name from the ERC721 contract, with DB caching. */
 async function fetchSpaceName(nftAddress: string): Promise<string> {
     // Check DB cache first
     const cached = getSpaceName(nftAddress)
-    if (cached) return cached
+    if (cached) {
+        const cleaned = cleanSpaceName(cached)
+        // Update cache if the name was cleaned
+        if (cleaned !== cached) saveSpaceName(nftAddress, cleaned)
+        return cleaned
+    }
 
     // Fetch from chain
     const viem = (bot as any).viem
@@ -332,11 +342,13 @@ async function fetchSpaceName(nftAddress: string): Promise<string> {
             abi: ERC721_HOLDERS_ABI,
             functionName: 'name',
         }) as string
-        if (name) {
-            saveSpaceName(nftAddress, name)
-            console.log(`[SpaceName] Cached name "${name}" for ${nftAddress}`)
+        // Strip common suffixes like " - Member", " - Membership", etc.
+        const cleaned = name ? name.replace(/\s*-\s*Member(ship)?$/i, '').trim() : ''
+        if (cleaned) {
+            saveSpaceName(nftAddress, cleaned)
+            console.log(`[SpaceName] Cached name "${cleaned}" for ${nftAddress}`)
         }
-        return name || ''
+        return cleaned
     } catch (err) {
         console.warn(`[SpaceName] Failed to fetch name for ${nftAddress}:`, err)
         return ''
