@@ -871,6 +871,7 @@
         let totalTaxPercent = 3
         let taxEnabled = false
         let adminTaxEnabled = false
+        let resolvedUserWallet = '' // smart wallet resolved from userId
 
         // Towns token default address
         const TOWNS_ADDRESS = '0x00000000A22C618fd6b4D7E9A335C4B96B189a38'
@@ -930,11 +931,25 @@
             if (screenHistory.length > 0) {
                 const prev = screenHistory.pop()
                 showScreen(prev, true)
-                // Refresh data when going back to public screen
+                // Refresh data when returning to list screens
                 if (prev === 'publicScreen') loadPublicAirdrops()
+                if (prev === 'historyScreen') loadHistory()
             } else {
                 showScreen('homeScreen', true)
             }
+        }
+
+        /** Check if current user is in a participants list */
+        function isUserInParticipants(participants) {
+            if (!participants || participants.length === 0) return false
+            const uid = (context?.towns?.user?.userId || '').toLowerCase()
+            const uaddr = (context?.towns?.user?.address || '').toLowerCase()
+            return participants.some(p => {
+                const lower = p.toLowerCase()
+                return lower === uid
+                    || (uaddr && lower === uaddr)
+                    || (resolvedUserWallet && lower === resolvedUserWallet)
+            })
         }
 
         // ==================================================================
@@ -1137,7 +1152,16 @@
                 const err = await res.json().catch(() => ({}))
                 throw new Error(err.error || 'Failed to join')
             }
-            return await res.json()
+            const data = await res.json()
+            // After joining, update resolvedUserWallet so alreadyJoined checks work
+            if (data.participants && !resolvedUserWallet) {
+                const uid = userId.toLowerCase()
+                const uaddr = userAddress.toLowerCase()
+                // The last added participant is likely ours
+                const last = data.participants[data.participants.length - 1]
+                if (last) resolvedUserWallet = last.toLowerCase()
+            }
+            return data
         }
 
         async function apiLaunchAirdrop(airdropId) {
@@ -1742,14 +1766,11 @@
                 }
 
                 const userId = context?.towns?.user?.userId?.toLowerCase() || ''
-                const userAddr = context?.towns?.user?.address?.toLowerCase() || ''
 
                 drops.forEach(drop => {
                     const isCreator = drop.creatorAddress?.toLowerCase() === userId
                     const canJoin = drop.status === 'funded' && drop.airdropType === 'public'
-                    const alreadyJoined = drop.participants?.some(p =>
-                        p.toLowerCase() === userId || (userAddr && p.toLowerCase() === userAddr)
-                    )
+                    const alreadyJoined = isUserInParticipants(drop.participants)
 
                     const titleHtml = drop.title
                         ? `<div style="font-weight:700; font-size:15px; color:#e0d4f5; margin-bottom:4px;">${escapeHtml(drop.title)}</div>`
@@ -1887,16 +1908,13 @@
             document.getElementById('statusRecipientCount').textContent = airdrop.recipientCount
 
             const userId = context?.towns?.user?.userId?.toLowerCase() || ''
-            const userAddr = context?.towns?.user?.address?.toLowerCase() || ''
             const isCreator = airdrop.creatorAddress?.toLowerCase() === userId
             const isPublic = airdrop.airdropType === 'public'
             const maxP = airdrop.maxParticipants || 0
 
             // Join section (public, funded)
             const joinSection = document.getElementById('statusJoinSection')
-            const alreadyJoined = airdrop.participants?.some(p =>
-                p.toLowerCase() === userId || (userAddr && p.toLowerCase() === userAddr)
-            )
+            const alreadyJoined = isUserInParticipants(airdrop.participants)
             const isFull = maxP > 0 && airdrop.recipientCount >= maxP
             const joinBtn = document.getElementById('statusJoinBtn')
             if (isPublic && airdrop.status === 'funded') {
@@ -2252,6 +2270,23 @@
                     initSDK(),
                     apiFetchConfig(),
                 ])
+
+                // Resolve user's smart wallet for alreadyJoined checks
+                const userId = context?.towns?.user?.userId || ''
+                const userAddr = context?.towns?.user?.address || ''
+                if (userId) {
+                    try {
+                        const wRes = await fetch(`/api/user-wallet?userId=${encodeURIComponent(userId)}`)
+                        if (wRes.ok) {
+                            const wData = await wRes.json()
+                            if (wData.wallet) resolvedUserWallet = wData.wallet.toLowerCase()
+                        }
+                    } catch { /* ignore */ }
+                }
+                // Also use context address if available
+                if (!resolvedUserWallet && userAddr) {
+                    resolvedUserWallet = userAddr.toLowerCase()
+                }
 
                 document.getElementById('loading').style.display = 'none'
                 document.getElementById('app').style.display = 'block'

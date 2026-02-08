@@ -50,6 +50,8 @@ import {
     getTopSpaces,
     saveSpaceName,
     getSpaceName,
+    setUserWallet,
+    getUserWallet,
 } from './db'
 import type { Airdrop, AirdropStatus } from './db'
 
@@ -1432,9 +1434,12 @@ app.post('/api/airdrop/:id/join', async (c) => {
             return c.json({ error: 'Invalid wallet address' }, 400)
         }
 
-        // Store display name
+        // Store display name and userId→wallet mapping
         if (displayName) {
             setParticipantName(walletAddress, displayName)
+        }
+        if (userId && isEthAddress(userId)) {
+            setUserWallet(userId, walletAddress)
         }
 
         // Check max participants
@@ -1580,6 +1585,16 @@ app.get('/api/my-airdrops/:address', (c) => {
     const addr = c.req.param('address')
     const myDrops = listAirdropsByCreator(addr).map(airdropToResponse)
     return c.json(myDrops)
+})
+
+// Resolve userId to known wallet address
+app.get('/api/user-wallet', (c) => {
+    const userId = (c.req.query('userId') ?? '').trim()
+    if (!userId || !isEthAddress(userId)) {
+        return c.json({ wallet: null })
+    }
+    const wallet = getUserWallet(userId)
+    return c.json({ wallet })
 })
 
 // Health check

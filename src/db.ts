@@ -197,6 +197,14 @@ export function initDb(): void {
         )
     `)
 
+    // User wallet mapping (userId EOA → smart wallet address)
+    db.run(`
+        CREATE TABLE IF NOT EXISTS user_wallets (
+            user_id        TEXT PRIMARY KEY,
+            wallet_address TEXT NOT NULL
+        )
+    `)
+
     // Space name cache — persisted permanently (spaces don't rename)
     db.run(`
         CREATE TABLE IF NOT EXISTS space_names (
@@ -490,6 +498,38 @@ export function getParticipantNames(addresses: string[]): Map<string, string> {
         for (const row of rows) {
             result.set(row.address, row.display_name)
         }
+    }
+    return result
+}
+
+// ============================================================================
+// User wallet mapping (userId EOA → smart wallet)
+// ============================================================================
+
+export function setUserWallet(userId: string, walletAddress: string): void {
+    db.run(
+        'INSERT OR REPLACE INTO user_wallets (user_id, wallet_address) VALUES ($uid, $wallet)',
+        { $uid: userId.toLowerCase(), $wallet: walletAddress.toLowerCase() },
+    )
+}
+
+export function getUserWallet(userId: string): string | null {
+    const row = db.query('SELECT wallet_address FROM user_wallets WHERE user_id = $uid').get({
+        $uid: userId.toLowerCase(),
+    }) as { wallet_address: string } | null
+    return row?.wallet_address ?? null
+}
+
+export function getUserWallets(userIds: string[]): Map<string, string> {
+    const result = new Map<string, string>()
+    if (userIds.length === 0) return result
+    const batch = userIds.map(u => u.toLowerCase())
+    const placeholders = batch.map(() => '?').join(',')
+    const rows = db.query(
+        `SELECT user_id, wallet_address FROM user_wallets WHERE user_id IN (${placeholders})`,
+    ).all(...batch) as { user_id: string; wallet_address: string }[]
+    for (const row of rows) {
+        result.set(row.user_id, row.wallet_address)
     }
     return result
 }
