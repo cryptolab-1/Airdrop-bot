@@ -53,7 +53,7 @@ import {
     setUserWallet,
     getUserWallet,
     deleteAirdrop,
-    deleteCompletedAirdrops,
+    resetLeaderboard,
     deleteHistoryAirdrops,
 } from './db'
 import type { Airdrop, AirdropStatus } from './db'
@@ -1634,9 +1634,9 @@ app.post('/api/admin/reset-leaderboard', async (c) => {
             return c.json({ error: 'Unauthorized: admin only' }, 403)
         }
 
-        const count = deleteCompletedAirdrops()
-        console.log(`[Admin] Leaderboard reset: deleted ${count} completed/cancelled airdrops`)
-        return c.json({ ok: true, deleted: count })
+        resetLeaderboard()
+        console.log(`[Admin] Leaderboard reset at ${Date.now()}`)
+        return c.json({ ok: true })
     } catch (err) {
         console.error('[Admin] Reset leaderboard error:', err)
         return c.json({ error: 'Failed to reset leaderboard' }, 500)

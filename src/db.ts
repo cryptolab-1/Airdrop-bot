@@ -205,6 +205,14 @@ export function initDb(): void {
         )
     `)
 
+    // App settings (key-value store for timestamps, flags, etc.)
+    db.run(`
+        CREATE TABLE IF NOT EXISTS app_settings (
+            key   TEXT PRIMARY KEY,
+            value TEXT NOT NULL
+        )
+    `)
+
     // Space name cache — persisted permanently (spaces don't rename)
     db.run(`
         CREATE TABLE IF NOT EXISTS space_names (
@@ -387,10 +395,20 @@ export function deleteAirdrop(id: string): void {
     db.run('DELETE FROM airdrops WHERE id = $id', { $id: id })
 }
 
-/** Delete all completed/cancelled airdrops (resets leaderboard & history) */
-export function deleteCompletedAirdrops(): number {
-    const result = db.run("DELETE FROM airdrops WHERE status IN ('completed','cancelled')")
-    return result.changes
+/** Reset leaderboard by setting a cutoff timestamp (airdrops before this are excluded) */
+export function resetLeaderboard(): void {
+    db.run(
+        "INSERT OR REPLACE INTO app_settings (key, value) VALUES ('leaderboard_reset_at', $ts)",
+        { $ts: String(Date.now()) },
+    )
+}
+
+/** Get the leaderboard reset cutoff timestamp (0 if never reset) */
+export function getLeaderboardResetAt(): number {
+    const row = db.query(
+        "SELECT value FROM app_settings WHERE key = 'leaderboard_reset_at'",
+    ).get() as { value: string } | null
+    return row ? parseInt(row.value, 10) : 0
 }
 
 /** Delete all airdrops in history view (everything except public pending/funded) */
@@ -418,17 +436,18 @@ interface SpaceLeaderboardEntry {
 
 /** Top N users who received the most airdrops (appeared as participants). */
 export function getTopRecipients(limit = 5): LeaderboardEntry[] {
-    // We need to unnest the JSON participants array. In SQLite, we use json_each.
+    const cutoff = getLeaderboardResetAt()
     const rows = db.query(`
         SELECT j.value AS address,
                COUNT(DISTINCT a.id) AS count,
                SUM(CAST(a.amount_per_recipient AS INTEGER)) AS total_amount
         FROM airdrops a, json_each(a.participants) j
         WHERE a.status = 'completed'
+          AND a.created_at > $cutoff
         GROUP BY LOWER(j.value)
         ORDER BY count DESC
         LIMIT $limit
-    `).all({ $limit: limit }) as { address: string; count: number; total_amount: number | null }[]
+    `).all({ $limit: limit, $cutoff: cutoff }) as { address: string; count: number; total_amount: number | null }[]
 
     return rows.map(r => ({
         address: r.address,
@@ -439,16 +458,18 @@ export function getTopRecipients(limit = 5): LeaderboardEntry[] {
 
 /** Top N airdrop creators by number of completed airdrops. */
 export function getTopCreators(limit = 5): LeaderboardEntry[] {
+    const cutoff = getLeaderboardResetAt()
     const rows = db.query(`
         SELECT creator_address AS address,
                COUNT(*) AS count,
                SUM(CAST(total_amount AS INTEGER)) AS total_amount
         FROM airdrops
         WHERE status = 'completed'
+          AND created_at > $cutoff
         GROUP BY LOWER(creator_address)
         ORDER BY count DESC
         LIMIT $limit
-    `).all({ $limit: limit }) as { address: string; count: number; total_amount: number | null }[]
+    `).all({ $limit: limit, $cutoff: cutoff }) as { address: string; count: number; total_amount: number | null }[]
 
     return rows.map(r => ({
         address: r.address,
@@ -459,6 +480,7 @@ export function getTopCreators(limit = 5): LeaderboardEntry[] {
 
 /** Top N spaces (by NFT address) that received the most airdrops. */
 export function getTopSpaces(limit = 5): SpaceLeaderboardEntry[] {
+    const cutoff = getLeaderboardResetAt()
     const rows = db.query(`
         SELECT a.space_nft_address,
                sn.name AS space_name,
@@ -467,12 +489,13 @@ export function getTopSpaces(limit = 5): SpaceLeaderboardEntry[] {
         FROM airdrops a
         LEFT JOIN space_names sn ON LOWER(a.space_nft_address) = LOWER(sn.nft_address)
         WHERE a.status = 'completed'
+          AND a.created_at > $cutoff
           AND a.space_nft_address IS NOT NULL
           AND a.space_nft_address != ''
         GROUP BY LOWER(a.space_nft_address)
         ORDER BY count DESC
         LIMIT $limit
-    `).all({ $limit: limit }) as { space_nft_address: string; space_name: string | null; count: number; total_amount: number | null }[]
+    `).all({ $limit: limit, $cutoff: cutoff }) as { space_nft_address: string; space_name: string | null; count: number; total_amount: number | null }[]
 
     return rows.map(r => ({
         spaceNftAddress: r.space_nft_address,
