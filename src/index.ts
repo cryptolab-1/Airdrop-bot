@@ -743,7 +743,7 @@ async function fetchManifest() {
             return
         }
         const json = await res.json() as any
-        const m = json?.miniapp
+        const m = json?.frame || json?.miniapp
         if (m) {
             manifestData = {
                 name: m.name || manifestData.name,
@@ -804,10 +804,35 @@ const app = bot.start()
 app.get('/', (c) => c.html(buildMiniappHtml()))
 app.get('/miniapp.html', (c) => c.html(buildMiniappHtml()))
 
-// Serve image routes by redirecting to manifest URLs (sourced from Farcaster hosted manifest)
-app.get('/icon.png', (c) => c.redirect(manifestData.iconUrl, 302))
-app.get('/image.png', (c) => c.redirect(manifestData.imageUrl, 302))
-app.get('/splash.png', (c) => c.redirect(manifestData.splashImageUrl, 302))
+// Serve image routes – fetch from river.delivery once and cache in memory
+const RIVER_IMAGE_URL = 'https://river.delivery/user/0xCC8ae8246f6FF472e7CDBa4aA973c2A91ba0C97c/image'
+let cachedImage: { data: Uint8Array; contentType: string } | null = null
+
+async function fetchAndCacheImage() {
+    try {
+        const res = await fetch(RIVER_IMAGE_URL)
+        if (res.ok) {
+            const buf = await res.arrayBuffer()
+            cachedImage = { data: new Uint8Array(buf), contentType: res.headers.get('content-type') || 'image/png' }
+            console.log(`[Image] Cached (${cachedImage.data.length} bytes)`)
+        }
+    } catch (err) {
+        console.warn('[Image] Fetch error:', err)
+    }
+}
+await fetchAndCacheImage()
+
+function serveImage(c: any) {
+    if (!cachedImage) return c.redirect(RIVER_IMAGE_URL, 302)
+    c.header('Content-Type', cachedImage.contentType)
+    c.header('Content-Length', cachedImage.data.length.toString())
+    c.header('Cache-Control', 'public, max-age=86400')
+    return c.body(cachedImage.data)
+}
+
+app.get('/icon.png', (c) => serveImage(c))
+app.get('/image.png', (c) => serveImage(c))
+app.get('/splash.png', (c) => serveImage(c))
 
 // Agent metadata
 app.get('/.well-known/agent-metadata.json', async (c) => {
