@@ -439,20 +439,19 @@ export function getTopRecipients(limit = 5): LeaderboardEntry[] {
     const cutoff = getLeaderboardResetAt()
     const rows = db.query(`
         SELECT j.value AS address,
-               COUNT(DISTINCT a.id) AS count,
-               SUM(CAST(a.amount_per_recipient AS INTEGER)) AS total_amount
+               COUNT(DISTINCT a.id) AS count
         FROM airdrops a, json_each(a.participants) j
         WHERE a.status = 'completed'
           AND a.created_at > $cutoff
         GROUP BY LOWER(j.value)
         ORDER BY count DESC
         LIMIT $limit
-    `).all({ $limit: limit, $cutoff: cutoff }) as { address: string; count: number; total_amount: number | null }[]
+    `).all({ $limit: limit, $cutoff: cutoff }) as { address: string; count: number }[]
 
     return rows.map(r => ({
         address: r.address,
         count: r.count,
-        totalAmount: String(r.total_amount ?? 0),
+        totalAmount: '0',
     }))
 }
 
@@ -461,20 +460,19 @@ export function getTopCreators(limit = 5): LeaderboardEntry[] {
     const cutoff = getLeaderboardResetAt()
     const rows = db.query(`
         SELECT creator_address AS address,
-               COUNT(*) AS count,
-               SUM(CAST(total_amount AS INTEGER)) AS total_amount
+               COUNT(*) AS count
         FROM airdrops
         WHERE status = 'completed'
           AND created_at > $cutoff
         GROUP BY LOWER(creator_address)
         ORDER BY count DESC
         LIMIT $limit
-    `).all({ $limit: limit, $cutoff: cutoff }) as { address: string; count: number; total_amount: number | null }[]
+    `).all({ $limit: limit, $cutoff: cutoff }) as { address: string; count: number }[]
 
     return rows.map(r => ({
         address: r.address,
         count: r.count,
-        totalAmount: String(r.total_amount ?? 0),
+        totalAmount: '0',
     }))
 }
 
@@ -484,8 +482,7 @@ export function getTopSpaces(limit = 5): SpaceLeaderboardEntry[] {
     const rows = db.query(`
         SELECT a.space_nft_address,
                sn.name AS space_name,
-               COUNT(*) AS count,
-               SUM(CAST(a.total_amount AS INTEGER)) AS total_amount
+               COUNT(*) AS count
         FROM airdrops a
         LEFT JOIN space_names sn ON LOWER(a.space_nft_address) = LOWER(sn.nft_address)
         WHERE a.status = 'completed'
@@ -501,7 +498,7 @@ export function getTopSpaces(limit = 5): SpaceLeaderboardEntry[] {
         spaceNftAddress: r.space_nft_address,
         spaceName: r.space_name || null,
         count: r.count,
-        totalAmount: String(r.total_amount ?? 0),
+        totalAmount: '0',
     }))
 }
 
