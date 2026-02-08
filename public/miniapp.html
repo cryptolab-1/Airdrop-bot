@@ -390,7 +390,7 @@
 
         <!-- ===================== HOME SCREEN ===================== -->
         <div id="homeScreen" class="card">
-            <img id="homePfp" class="pfp" src="" alt="Profile" />
+            <img class="pfp" src="/icon.png" alt="App Icon" />
             <h1 style="text-align:center;">Welcome</h1>
             <div id="homeUsername" style="text-align:center; font-size:16px; font-weight:600; color:#c4b5fd; margin-bottom:20px;"></div>
 
@@ -1712,30 +1712,6 @@
 
                 document.getElementById('loading').style.display = 'none'
                 document.getElementById('app').style.display = 'block'
-
-                // Profile picture — try multiple sources
-                const userId = context.towns.user.userId
-                const pfpEl = document.getElementById('homePfp')
-                const pfpCandidates = [
-                    context.user?.pfpUrl,
-                    context.towns?.user?.pfpUrl,
-                    `https://river.delivery/user/${userId}/image`,
-                ].filter(Boolean)
-
-                if (pfpCandidates.length > 0) {
-                    let pfpIdx = 0
-                    pfpEl.onerror = function() {
-                        pfpIdx++
-                        if (pfpIdx < pfpCandidates.length) {
-                            this.src = pfpCandidates[pfpIdx]
-                        } else {
-                            this.style.display = 'none'
-                        }
-                    }
-                    pfpEl.src = pfpCandidates[0]
-                } else {
-                    pfpEl.style.display = 'none'
-                }
 
                 // Username
                 const displayName = context.user?.displayName || 'User'
