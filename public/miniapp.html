@@ -1084,7 +1084,7 @@
             return await res.json()
         }
 
-        async function apiCreateAirdrop(airdropType, totalAmountWei, creatorAddress, currency, decimals, displayName, symbol, title, description) {
+        async function apiCreateAirdrop(airdropType, totalAmountWei, creatorAddress, currency, decimals, displayName, symbol, title, description, maxParticipants) {
             const spaceAddr = getSpaceAddress()
             const body = {
                 airdropType, totalAmount: totalAmountWei, creatorAddress,
@@ -1093,6 +1093,7 @@
             }
             if (title) body.title = title
             if (description) body.description = description
+            if (maxParticipants && maxParticipants > 0) body.maxParticipants = maxParticipants
             const res = await fetch('/api/airdrop', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
