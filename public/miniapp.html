@@ -1852,6 +1852,39 @@
             startPolling(airdrop.id)
         }
 
+        // Auto-distribution countdown
+        let autoDistTimer = null
+        let autoDistSeconds = 10
+
+        function startAutoDistCountdown(msgEl) {
+            if (autoDistTimer) return // already running
+            autoDistSeconds = 10
+            renderCountdown(msgEl)
+            autoDistTimer = setInterval(() => {
+                autoDistSeconds--
+                if (autoDistSeconds <= 0) {
+                    stopAutoDistCountdown()
+                    msgEl.innerHTML = '<div class="info-box"><span class="spinner-sm"></span> Distributing tokens... please wait.</div>'
+                } else {
+                    renderCountdown(msgEl)
+                }
+            }, 1000)
+        }
+
+        function renderCountdown(msgEl) {
+            msgEl.innerHTML = `<div class="info-box" style="text-align:center;">
+                <div style="font-size:18px; font-weight:700; color:#22c55e; margin-bottom:6px;">🎉 Airdrop is full!</div>
+                <div>Distribution will start in <strong>${autoDistSeconds}s</strong></div>
+            </div>`
+        }
+
+        function stopAutoDistCountdown() {
+            if (autoDistTimer) {
+                clearInterval(autoDistTimer)
+                autoDistTimer = null
+            }
+        }
+
         function updateStatusUI(airdrop) {
             const badge = document.getElementById('statusBadge')
             badge.textContent = airdrop.status.toUpperCase()
@@ -1981,15 +2014,22 @@
             const resultMsg = document.getElementById('statusResultMessage')
             if (airdrop.status === 'completed') {
                 resultSection.classList.remove('hidden')
+                stopAutoDistCountdown()
                 const txLink = airdrop.txHash
                     ? ` <a href="https://basescan.org/tx/${airdrop.txHash}" target="_blank">View on Basescan</a>`
                     : ''
                 resultMsg.innerHTML = `<div class="success">Airdrop completed! ${airdrop.recipientCount} recipients received tokens.${txLink}</div>`
             } else if (airdrop.status === 'distributing') {
                 resultSection.classList.remove('hidden')
+                stopAutoDistCountdown()
                 resultMsg.innerHTML = '<div class="info-box"><span class="spinner-sm"></span> Distributing tokens... please wait.</div>'
+            } else if (airdrop.status === 'funded' && maxP > 0 && airdrop.recipientCount >= maxP) {
+                // Max participants reached — show countdown before auto-distribution
+                resultSection.classList.remove('hidden')
+                startAutoDistCountdown(resultMsg)
             } else {
                 resultSection.classList.add('hidden')
+                stopAutoDistCountdown()
             }
         }
 
