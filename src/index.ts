@@ -55,9 +55,6 @@ import {
     deleteAirdrop,
     resetLeaderboard,
     deleteHistoryAirdrops,
-    saveSpaceRoles,
-    getSpaceRoles,
-    isSpaceRolesStale,
 } from './db'
 import type { Airdrop, AirdropStatus } from './db'
 
@@ -1070,40 +1067,27 @@ app.get('/api/holders', async (c) => {
     }
 })
 
-// Get roles for a space (cached in DB, refreshed every 24h)
+// Get roles for a space (uses bot.getAllRoles which reads from the space contract)
 app.get('/api/roles', async (c) => {
     const rawSpaceId = (c.req.query('spaceId') ?? '').trim()
     if (!rawSpaceId) {
         return c.json({ error: 'Missing spaceId' }, 400)
     }
 
-    const spaceAddr = (extractAddressFromStreamId(rawSpaceId) || rawSpaceId).toLowerCase()
+    // Convert NFT address to stream ID format for the SDK
+    // SpaceAddressFromSpaceId does spaceId.slice(2, 42), so 0x-prefixed address works
+    const spaceIdForSdk = rawSpaceId
 
-    // Check DB cache first
-    const cached = getSpaceRoles(spaceAddr)
-    if (cached && !isSpaceRolesStale(spaceAddr)) {
-        console.log(`[Roles] Using cached ${cached.length} roles for ${spaceAddr}`)
-        return c.json(cached)
-    }
-
-    // Fetch from chain
     try {
-        const roles = await bot.getAllRoles(rawSpaceId)
-        const mapped = roles
-            .filter(r => !r.disabled)
-            .map(r => ({ id: Number(r.id), name: r.name }))
-
-        // Save to DB cache
-        saveSpaceRoles(spaceAddr, mapped)
-        console.log(`[Roles] Fetched & cached ${mapped.length} roles for ${spaceAddr}`)
-        return c.json(mapped)
+        const roles = await bot.getAllRoles(spaceIdForSdk)
+        console.log(`[Roles] Fetched ${roles.length} roles for space ${rawSpaceId}`)
+        return c.json(roles.map(r => ({
+            id: Number(r.id),
+            name: r.name,
+            disabled: r.disabled,
+        })).filter(r => !r.disabled))
     } catch (err) {
         console.error('[Roles] Failed to fetch roles:', err)
-        // If chain fetch fails but we have stale cache, return it
-        if (cached) {
-            console.log(`[Roles] Returning stale cache (${cached.length} roles) for ${spaceAddr}`)
-            return c.json(cached)
-        }
         return c.json({ error: 'Failed to fetch roles' }, 500)
     }
 })

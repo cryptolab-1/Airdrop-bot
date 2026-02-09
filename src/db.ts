@@ -198,17 +198,6 @@ export function initDb(): void {
         )
     `)
 
-    // Space roles cache — refreshed every 24h per space
-    db.run(`
-        CREATE TABLE IF NOT EXISTS space_roles (
-            space_address  TEXT NOT NULL,
-            role_id        INTEGER NOT NULL,
-            role_name      TEXT NOT NULL,
-            updated_at     INTEGER NOT NULL,
-            PRIMARY KEY (space_address, role_id)
-        )
-    `)
-
     // Token info cache — persisted permanently (no expiry needed)
     db.run(`
         CREATE TABLE IF NOT EXISTS token_cache (
@@ -691,50 +680,6 @@ export function isSpaceHoldersStale(nftAddress: string): boolean {
     const lastUpdated = getSpaceHoldersLastUpdated(nftAddress)
     if (!lastUpdated) return true
     return Date.now() - lastUpdated > SPACE_HOLDER_REFRESH_MS
-}
-
-// ============================================================================
-// Space roles cache (per space, refreshed every 24h)
-// ============================================================================
-
-const SPACE_ROLES_REFRESH_MS = 24 * 60 * 60 * 1000 // 24h
-
-export interface CachedSpaceRole {
-    id: number
-    name: string
-}
-
-export function saveSpaceRoles(spaceAddress: string, roles: CachedSpaceRole[]): void {
-    const now = Date.now()
-    const addr = spaceAddress.toLowerCase()
-    const tx = db.transaction(() => {
-        db.run('DELETE FROM space_roles WHERE space_address = $addr', { $addr: addr })
-        const stmt = db.prepare(
-            'INSERT INTO space_roles (space_address, role_id, role_name, updated_at) VALUES ($addr, $rid, $name, $ts)',
-        )
-        for (const r of roles) {
-            stmt.run({ $addr: addr, $rid: r.id, $name: r.name, $ts: now })
-        }
-    })
-    tx()
-}
-
-export function getSpaceRoles(spaceAddress: string): CachedSpaceRole[] | null {
-    const addr = spaceAddress.toLowerCase()
-    const rows = db.query(
-        'SELECT role_id, role_name FROM space_roles WHERE space_address = $addr',
-    ).all({ $addr: addr }) as { role_id: number; role_name: string }[]
-    if (rows.length === 0) return null
-    return rows.map(r => ({ id: r.role_id, name: r.role_name }))
-}
-
-export function isSpaceRolesStale(spaceAddress: string): boolean {
-    const addr = spaceAddress.toLowerCase()
-    const row = db.query(
-        'SELECT MAX(updated_at) as ts FROM space_roles WHERE space_address = $addr',
-    ).get({ $addr: addr }) as { ts: number | null }
-    if (!row?.ts) return true
-    return Date.now() - row.ts > SPACE_ROLES_REFRESH_MS
 }
 
 // ============================================================================
