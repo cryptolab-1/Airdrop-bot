@@ -39,8 +39,6 @@ export interface Airdrop {
     title?: string
     description?: string
     maxParticipants?: number  // 0 or undefined = unlimited
-    roleId?: number           // optional role filter for space airdrops
-    roleName?: string         // display name of the role
     createdAt: number
     updatedAt: number
 }
@@ -75,8 +73,6 @@ interface AirdropRow {
     title: string | null
     description: string | null
     max_participants: number | null
-    role_id: number | null
-    role_name: string | null
     created_at: number
     updated_at: number
 }
@@ -138,8 +134,6 @@ export function initDb(): void {
             title                    TEXT,
             description              TEXT,
             max_participants         INTEGER DEFAULT 0,
-            role_id                  INTEGER,
-            role_name                TEXT,
             created_at               INTEGER NOT NULL,
             updated_at               INTEGER NOT NULL
         )
@@ -165,12 +159,6 @@ export function initDb(): void {
     }
     if (!colNames.has('max_participants')) {
         db.run("ALTER TABLE airdrops ADD COLUMN max_participants INTEGER DEFAULT 0")
-    }
-    if (!colNames.has('role_id')) {
-        db.run("ALTER TABLE airdrops ADD COLUMN role_id INTEGER")
-    }
-    if (!colNames.has('role_name')) {
-        db.run("ALTER TABLE airdrops ADD COLUMN role_name TEXT")
     }
 
     db.run(`
@@ -268,8 +256,6 @@ function rowToAirdrop(row: AirdropRow): Airdrop {
         title: row.title ?? undefined,
         description: row.description ?? undefined,
         maxParticipants: row.max_participants ?? 0,
-        roleId: row.role_id ?? undefined,
-        roleName: row.role_name ?? undefined,
         createdAt: row.created_at,
         updatedAt: row.updated_at,
     }
@@ -290,7 +276,6 @@ const SAVE_SQL = `
         deposit_tx_hash, distribution_tx_hash,
         tax_distribution_tx_hash, admin_tax_distribution_tx_hash,
         title, description, max_participants,
-        role_id, role_name,
         created_at, updated_at
     ) VALUES (
         $id, $creator_address, $airdrop_type, $space_nft_address,
@@ -302,7 +287,6 @@ const SAVE_SQL = `
         $deposit_tx_hash, $distribution_tx_hash,
         $tax_distribution_tx_hash, $admin_tax_distribution_tx_hash,
         $title, $description, $max_participants,
-        $role_id, $role_name,
         $created_at, $updated_at
     )
 `
@@ -334,8 +318,6 @@ export function saveAirdrop(a: Airdrop): void {
         $title: a.title ?? null,
         $description: a.description ?? null,
         $max_participants: a.maxParticipants ?? 0,
-        $role_id: a.roleId ?? null,
-        $role_name: a.roleName ?? null,
         $created_at: a.createdAt,
         $updated_at: a.updatedAt,
     })

@@ -233,8 +233,6 @@ function airdropToResponse(a: Airdrop) {
         title: a.title || null,
         description: a.description || null,
         maxParticipants: a.maxParticipants || 0,
-        roleId: a.roleId || null,
-        roleName: a.roleName || null,
         createdAt: a.createdAt,
         mode: a.airdropType === 'space' ? 'fixed' : 'react', // backward compat
     }
@@ -1067,31 +1065,6 @@ app.get('/api/holders', async (c) => {
     }
 })
 
-// Get roles for a space (uses bot.getAllRoles which reads from the space contract)
-app.get('/api/roles', async (c) => {
-    const rawSpaceId = (c.req.query('spaceId') ?? '').trim()
-    if (!rawSpaceId) {
-        return c.json({ error: 'Missing spaceId' }, 400)
-    }
-
-    // Convert NFT address to stream ID format for the SDK
-    // SpaceAddressFromSpaceId does spaceId.slice(2, 42), so 0x-prefixed address works
-    const spaceIdForSdk = rawSpaceId
-
-    try {
-        const roles = await bot.getAllRoles(spaceIdForSdk)
-        console.log(`[Roles] Fetched ${roles.length} roles for space ${rawSpaceId}`)
-        return c.json(roles.map(r => ({
-            id: Number(r.id),
-            name: r.name,
-            disabled: r.disabled,
-        })).filter(r => !r.disabled))
-    } catch (err) {
-        console.error('[Roles] Failed to fetch roles:', err)
-        return c.json({ error: 'Failed to fetch roles' }, 500)
-    }
-})
-
 // Create airdrop
 app.post('/api/airdrop', async (c) => {
     try {
@@ -1101,7 +1074,6 @@ app.post('/api/airdrop', async (c) => {
             currencySymbol: rawSymbol, spaceId, currencyDecimals: rawDecimals,
             creatorDisplayName, title: rawTitle, description: rawDescription,
             maxParticipants: rawMaxParticipants,
-            roleId: rawRoleId, roleName: rawRoleName,
         } = body
 
         if (!airdropType || !totalAmount || !creatorAddress) {
@@ -1182,23 +1154,6 @@ app.post('/api/airdrop', async (c) => {
                 console.log(`[Airdrop] Cached ${participants.length} holders for ${nftAddress}`)
             }
 
-            // Role-based filtering: if a roleId is provided, intersect participants with role members
-            if (airdropType === 'space' && typeof rawRoleId === 'number' && rawRoleId > 0 && spaceId) {
-                try {
-                    const roleDetails = await bot.getRole(spaceId, rawRoleId)
-                    if (roleDetails && roleDetails.users && roleDetails.users.length > 0) {
-                        const roleUsersLower = new Set(roleDetails.users.map((u: string) => u.toLowerCase()))
-                        const beforeCount = participants.length
-                        participants = participants.filter(p => roleUsersLower.has(p.toLowerCase()))
-                        console.log(`[Airdrop] Role filter (${rawRoleName || rawRoleId}): ${beforeCount} → ${participants.length} participants`)
-                    } else {
-                        console.log(`[Airdrop] Role ${rawRoleId} has no users, keeping all participants`)
-                    }
-                } catch (err) {
-                    console.error(`[Airdrop] Failed to fetch role ${rawRoleId}, skipping role filter:`, err)
-                }
-            }
-
             recipientCount = participants.length
         }
         // For 'public' airdrops, participants join later
@@ -1236,8 +1191,6 @@ app.post('/api/airdrop', async (c) => {
             maxParticipants: (airdropType === 'public' && typeof rawMaxParticipants === 'number' && rawMaxParticipants > 0)
                 ? rawMaxParticipants
                 : 0,
-            roleId: (airdropType === 'space' && typeof rawRoleId === 'number' && rawRoleId > 0) ? rawRoleId : undefined,
-            roleName: (airdropType === 'space' && typeof rawRoleName === 'string' && rawRoleName) ? rawRoleName.trim() : undefined,
             createdAt: Date.now(),
             updatedAt: Date.now(),
         }
