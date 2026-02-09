@@ -753,6 +753,9 @@
                     <span class="info-label">Net to Recipients</span>
                     <span class="info-value" id="statusNetAmount">-</span>
                 </div>
+                <div id="statusTaxNote" class="hidden" style="margin-top:4px;">
+                    <div class="hint" style="margin:0; text-align:center; font-style:italic;">Holders tax is distributed to <span id="statusTaxMemberCount">0</span> Crypto Lab's town members</div>
+                </div>
                 <div class="info-row">
                     <span class="info-label">Per Recipient</span>
                     <span class="info-value" id="statusPerRecipient">-</span>
@@ -2043,6 +2046,13 @@
                 document.getElementById('statusNetRow').classList.remove('hidden')
             } else {
                 document.getElementById('statusNetRow').classList.add('hidden')
+            }
+            // Show holder tax note on status screen
+            if (airdrop.taxPercent > 0 && airdrop.taxAmount && airdrop.taxAmount !== '0') {
+                document.getElementById('statusTaxMemberCount').textContent = airdrop.taxHolderCount || 0
+                document.getElementById('statusTaxNote').classList.remove('hidden')
+            } else {
+                document.getElementById('statusTaxNote').classList.add('hidden')
             }
 
             document.getElementById('statusPerRecipient').textContent =
