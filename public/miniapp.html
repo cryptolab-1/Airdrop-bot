@@ -525,6 +525,16 @@
                             <span class="info-value" id="holderCount">0</span>
                         </div>
                     </div>
+                    <!-- Role filter (space only) -->
+                    <div id="roleFilterSection" class="hidden" style="margin-top:8px;">
+                        <div class="form-group" style="margin-bottom:0;">
+                            <label>Filter by Role (optional)</label>
+                            <select id="roleSelect" style="font-size:13px;">
+                                <option value="">All Members</option>
+                            </select>
+                            <div class="hint">Only airdrop to members with this role</div>
+                        </div>
+                    </div>
                 </div>
 
                 <div class="divider"></div>
@@ -739,6 +749,10 @@
                     <span class="info-label">Type</span>
                     <span class="info-value" id="statusType">-</span>
                 </div>
+                <div class="info-row hidden" id="statusRoleRow">
+                    <span class="info-label">Role Filter</span>
+                    <span class="info-value" id="statusRoleName" style="color:#a78bfa;">-</span>
+                </div>
                 <div class="info-row">
                     <span class="info-label">Total Amount</span>
                     <span class="info-value" id="statusTotal">-</span>
@@ -946,6 +960,9 @@
         let taxHolderCount = 0
         let botTreasuryAddress = ''
         let pollInterval = null
+        let spaceRoles = [] // cached roles for the space
+        let selectedRoleId = null
+        let selectedRoleName = ''
         let taxPercent = 2 // default, updated from /api/config
         let adminTaxPercent = 1
         let totalTaxPercent = 3
@@ -1188,6 +1205,36 @@
             return await res.json()
         }
 
+        async function apiFetchRoles() {
+            const spaceAddr = getSpaceAddress()
+            if (!spaceAddr) return []
+            try {
+                const res = await fetch(`/api/roles?spaceId=${encodeURIComponent(spaceAddr)}`)
+                if (!res.ok) return []
+                return await res.json()
+            } catch (err) {
+                console.error('[Roles] Failed to fetch roles:', err)
+                return []
+            }
+        }
+
+        function populateRoleDropdown(roles) {
+            const sel = document.getElementById('roleSelect')
+            // Keep the "All Members" default option
+            sel.innerHTML = '<option value="">All Members</option>'
+            for (const role of roles) {
+                const opt = document.createElement('option')
+                opt.value = role.id
+                opt.textContent = role.name
+                sel.appendChild(opt)
+            }
+            if (roles.length > 0) {
+                document.getElementById('roleFilterSection').classList.remove('hidden')
+            } else {
+                document.getElementById('roleFilterSection').classList.add('hidden')
+            }
+        }
+
         async function apiCreateAirdrop(airdropType, totalAmountWei, creatorAddress, currency, decimals, displayName, symbol, title, description, maxParticipants) {
             const spaceAddr = getSpaceAddress()
             const body = {
@@ -1198,6 +1245,10 @@
             if (title) body.title = title
             if (description) body.description = description
             if (maxParticipants && maxParticipants > 0) body.maxParticipants = maxParticipants
+            if (airdropType === 'space' && selectedRoleId) {
+                body.roleId = selectedRoleId
+                body.roleName = selectedRoleName
+            }
             const res = await fetch('/api/airdrop', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -1312,6 +1363,11 @@
                 document.getElementById('holderSection').classList.add('hidden')
                 document.getElementById('perPersonSummary').classList.add('hidden')
                 document.getElementById('publicTitleGroup').classList.remove('hidden')
+                // Reset role selection when switching away from space
+                document.getElementById('roleSelect').value = ''
+                selectedRoleId = null
+                selectedRoleName = ''
+                document.getElementById('roleFilterSection').classList.add('hidden')
             }
             updatePerPerson()
             validateCreateForm()
@@ -1374,6 +1430,13 @@
                     holdersFetching = false
                     updatePerPerson()
                     validateCreateForm()
+
+                    // Fetch roles in the background (non-blocking)
+                    apiFetchRoles().then(roles => {
+                        spaceRoles = roles
+                        populateRoleDropdown(roles)
+                    })
+
                     return // success
                 } catch (err) {
                     lastError = err
@@ -1412,6 +1475,18 @@
 
         document.getElementById('airdropTypeSelect').addEventListener('change', () => {
             initCreateScreen()
+        })
+
+        document.getElementById('roleSelect').addEventListener('change', () => {
+            const sel = document.getElementById('roleSelect')
+            const val = sel.value
+            if (val) {
+                selectedRoleId = parseInt(val, 10)
+                selectedRoleName = sel.options[sel.selectedIndex].text
+            } else {
+                selectedRoleId = null
+                selectedRoleName = ''
+            }
         })
 
         document.getElementById('currencySelect').addEventListener('change', () => {
@@ -2026,6 +2101,13 @@
                 ? (airdrop.spaceName ? airdrop.spaceName + ' Members' : 'Space Members')
                 : 'Public'
             document.getElementById('statusType').textContent = typeLabel
+            // Show role filter if set
+            if (airdrop.roleName) {
+                document.getElementById('statusRoleName').textContent = airdrop.roleName
+                document.getElementById('statusRoleRow').classList.remove('hidden')
+            } else {
+                document.getElementById('statusRoleRow').classList.add('hidden')
+            }
             const dec = airdrop.currencyDecimals ?? 18
             const sym = airdrop.currencySymbol ? '$' + airdrop.currencySymbol : 'tokens'
             document.getElementById('statusTotal').textContent = formatTokens(airdrop.totalAmount, dec) + ' ' + sym
@@ -2469,7 +2551,7 @@
                             <span class="airdrop-card-title">${formatTokens(drop.totalAmount, dec)} ${sym}</span>
                             <span class="status-badge status-${drop.status}">${drop.status.toUpperCase()}</span>
                         </div>
-                        <div class="airdrop-card-detail">${drop.airdropType === 'space' ? (drop.spaceName ? drop.spaceName + ' Members' : 'Space Members') : 'Public'} &middot; ${drop.recipientCount} recipient${drop.recipientCount !== 1 ? 's' : ''}</div>
+                        <div class="airdrop-card-detail">${drop.airdropType === 'space' ? (drop.spaceName ? drop.spaceName + ' Members' : 'Space Members') : 'Public'}${drop.roleName ? ' &middot; ' + drop.roleName : ''} &middot; ${drop.recipientCount} recipient${drop.recipientCount !== 1 ? 's' : ''}</div>
                         <div class="airdrop-card-detail" style="opacity:0.4;">By ${drop.creatorName || shortAddr(drop.creatorAddress)} &middot; ${date}</div>
                         <div class="airdrop-card-actions">
                             <button class="sm secondary" onclick="viewDrop('${drop.id}')">View Details</button>
