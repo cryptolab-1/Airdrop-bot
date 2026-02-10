@@ -43,6 +43,7 @@ import {
     getSpaceHolders,
     getSpaceHoldersLastUpdated,
     isSpaceHoldersStale,
+    clearSpaceHolders,
     saveTokenInfo,
     getTokenInfo,
     getTopRecipients,
@@ -1002,13 +1003,13 @@ app.get('/api/debug/space-holders', async (c) => {
     if (forceRefresh) {
         try {
             console.log(`[Debug] Force refresh starting for ${rawNft}...`)
-            const excludeAddresses = (process.env.AIRDROP_EXCLUDE_ADDRESSES ?? '')
+            const exAddr = (process.env.AIRDROP_EXCLUDE_ADDRESSES ?? '')
                 .split(',').map(s => s.trim()).filter(Boolean)
 
             console.log(`[Debug] Fetching NFT holders from chain...`)
             const holders = await getMembershipNftHolderAddresses(
                 bot as AnyBot,
-                rawNft as Address, // Use original case for chain call
+                rawNft as Address,
             )
             console.log(`[Debug] Got ${holders.length} raw holders, resolving smart accounts...`)
 
@@ -1016,7 +1017,7 @@ app.get('/api/debug/space-holders', async (c) => {
                 await getUniqueRecipientAddresses(
                     bot as AnyBot,
                     holders.map((a) => a as string),
-                    { excludeAddresses: excludeAddresses.length > 0 ? excludeAddresses : undefined, onlyResolved: false },
+                    { excludeAddresses: exAddr.length > 0 ? exAddr : undefined, onlyResolved: false },
                 )
             ).map((a) => a as string)
             saveSpaceHolders(nftAddress, unique)
@@ -1087,6 +1088,17 @@ app.get('/api/debug/space-holders', async (c) => {
     }
 
     return c.json(result)
+})
+
+// Debug: clear space holders cache (forces re-fetch on next airdrop creation)
+app.post('/api/debug/clear-cache', (c) => {
+    const nftAddress = (c.req.query('nft') ?? '').trim().toLowerCase()
+    if (!nftAddress) {
+        return c.json({ error: 'Missing ?nft= parameter' }, 400)
+    }
+    const deleted = clearSpaceHolders(nftAddress)
+    console.log(`[Debug] Cleared ${deleted} cached holders for ${nftAddress}`)
+    return c.json({ ok: true, deleted, message: `Cleared ${deleted} cached entries. Cache will rebuild on next airdrop creation or holder fetch.` })
 })
 
 // Debug: resolve userId → smart account

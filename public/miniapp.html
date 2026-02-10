@@ -933,6 +933,7 @@
                     <div style="display:flex; gap:8px; margin-top:8px;">
                         <button id="adminInspectBtn" class="sm secondary" style="flex:1;">Inspect Cache</button>
                         <button id="adminRefreshBtn" class="sm danger" style="flex:1;">Force Refresh</button>
+                        <button id="adminClearCacheBtn" class="sm danger" style="flex:1;">Clear Cache</button>
                     </div>
 
                     <div id="adminHoldersResult" class="hidden" style="margin-top:12px;"></div>
@@ -2840,6 +2841,32 @@
             } finally {
                 btn.disabled = false
                 btn.textContent = 'Force Refresh'
+            }
+        })
+
+        // Space Holders - Clear Cache
+        document.getElementById('adminClearCacheBtn').addEventListener('click', async () => {
+            const nft = document.getElementById('adminNftInput').value.trim()
+            if (!nft) return alert('Enter a Space NFT address')
+
+            if (!confirm('Clear the holders cache? It will rebuild on next airdrop creation.')) return
+
+            const btn = document.getElementById('adminClearCacheBtn')
+            btn.disabled = true
+            btn.textContent = 'Clearing...'
+            const resultEl = document.getElementById('adminHoldersResult')
+
+            try {
+                const res = await fetch(`/api/debug/clear-cache?nft=${encodeURIComponent(nft)}`, { method: 'POST' })
+                const data = await res.json()
+                if (!res.ok) throw new Error(data.error || 'Clear failed')
+                renderDebugResult(data, resultEl)
+            } catch (err) {
+                resultEl.innerHTML = `<div class="error">${err.message}</div>`
+                resultEl.classList.remove('hidden')
+            } finally {
+                btn.disabled = false
+                btn.textContent = 'Clear Cache'
             }
         })
 

@@ -688,6 +688,12 @@ export function isSpaceHoldersStale(nftAddress: string): boolean {
     return Date.now() - lastUpdated > SPACE_HOLDER_REFRESH_MS
 }
 
+export function clearSpaceHolders(nftAddress: string): number {
+    const addr = nftAddress.toLowerCase()
+    const info = db.run('DELETE FROM space_holders WHERE nft_address = $addr', { $addr: addr })
+    return info.changes
+}
+
 // ============================================================================
 // Token info cache (permanent — no expiry)
 // ============================================================================
