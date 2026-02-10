@@ -464,7 +464,7 @@
             <div id="homeUsername" style="text-align:center; font-size:16px; font-weight:600; color:#c4b5fd; margin-bottom:20px;"></div>
 
             <button id="btnCreateAirdrop">Create an Airdrop</button>
-            <button id="btnJoinPublic" class="secondary" style="margin-top:8px;">Join a Public Airdrop</button>
+            <button id="btnJoinPublic" class="secondary" style="margin-top:8px;">Join an Airdrop</button>
             <button id="btnHistory" class="secondary" style="margin-top:8px;">Airdrop History</button>
             <button id="btnLeaderboard" class="secondary" style="margin-top:8px;">Leaderboard</button>
 
@@ -486,6 +486,32 @@
                         <option value="space">Airdrop Space Members</option>
                         <option value="public">Public Airdrop</option>
                     </select>
+                </div>
+
+                <!-- Space airdrop mode: all holders vs joinable -->
+                <div id="spaceModeGroup" class="hidden">
+                    <div class="form-group">
+                        <label>Distribution Mode</label>
+                        <select id="spaceModeSelect">
+                            <option value="all">Airdrop Every Holder</option>
+                            <option value="join">Let Holders Join</option>
+                        </select>
+                    </div>
+                    <div id="spaceMaxParticipantsGroup" class="hidden">
+                        <div class="form-group">
+                            <label>Max Participants</label>
+                            <input type="number" id="spaceMaxParticipantsInput" placeholder="How many holders can join?" min="1" />
+                            <div class="hint">Only space members can join. Distribution starts when max is reached.</div>
+                        </div>
+                        <div class="form-group">
+                            <label>Title (optional)</label>
+                            <input type="text" id="spaceTitleInput" placeholder="e.g. Community Reward" maxlength="100" />
+                        </div>
+                        <div class="form-group">
+                            <label>Description (optional)</label>
+                            <textarea id="spaceDescInput" placeholder="Describe your airdrop..." rows="2" maxlength="500" style="resize:vertical;"></textarea>
+                        </div>
+                    </div>
                 </div>
 
                 <!-- Public airdrop: Title, Description, Max Participants -->
@@ -708,7 +734,7 @@
         <div id="publicScreen" class="hidden">
             <div class="card">
                 <button class="back-btn" id="publicBackBtn">&larr; Back</button>
-                <h2>Public Airdrops</h2>
+                <h2>Join Airdrops</h2>
                 <div class="subtitle">Browse and join available airdrops</div>
 
                 <div id="publicLoading" style="text-align:center; padding:20px 0;">
@@ -716,7 +742,7 @@
                 </div>
 
                 <div id="publicList"></div>
-                <div id="publicEmpty" class="empty-state hidden">No public airdrops available right now.</div>
+                <div id="publicEmpty" class="empty-state hidden">No airdrops available to join right now.</div>
 
                 <div id="publicError" class="error hidden"></div>
             </div>
@@ -773,6 +799,13 @@
                 <div class="info-row hidden" id="statusMaxParticipantsRow">
                     <span class="info-label">Max Participants</span>
                     <span class="info-value" id="statusMaxParticipants">-</span>
+                </div>
+
+                <!-- Space-restricted join notice -->
+                <div id="statusSpaceJoinNotice" class="hidden" style="border:1px solid rgba(234,179,8,0.3); background:rgba(234,179,8,0.08); border-radius:10px; padding:12px 14px; margin-bottom:10px; text-align:center;">
+                    <div style="font-size:13px; font-weight:600; color:#fbbf24;">&#128274; Space Members Only</div>
+                    <div style="font-size:12px; opacity:0.65; margin-top:4px;">Only <span id="statusSpaceName" style="color:#fbbf24;">space</span> holders can join this airdrop</div>
+                    <div style="font-size:12px; opacity:0.55; margin-top:2px;"><span id="statusSpaceJoinSlots" style="color:#fbbf24;">0</span> / <span id="statusSpaceJoinMax">0</span> slots filled</div>
                 </div>
 
                 <!-- Pending actions (creator can fund or cancel) -->
@@ -946,6 +979,7 @@
         let taxHolderCount = 0
         let botTreasuryAddress = ''
         let pollInterval = null
+        let spaceMode = 'all' // 'all' or 'join'
         let taxPercent = 2 // default, updated from /api/config
         let adminTaxPercent = 1
         let totalTaxPercent = 3
@@ -1188,7 +1222,7 @@
             return await res.json()
         }
 
-        async function apiCreateAirdrop(airdropType, totalAmountWei, creatorAddress, currency, decimals, displayName, symbol, title, description, maxParticipants) {
+        async function apiCreateAirdrop(airdropType, totalAmountWei, creatorAddress, currency, decimals, displayName, symbol, title, description, maxParticipants, spaceJoinMode) {
             const spaceAddr = getSpaceAddress()
             const body = {
                 airdropType, totalAmount: totalAmountWei, creatorAddress,
@@ -1198,6 +1232,7 @@
             if (title) body.title = title
             if (description) body.description = description
             if (maxParticipants && maxParticipants > 0) body.maxParticipants = maxParticipants
+            if (spaceJoinMode) body.spaceJoinMode = true
             const res = await fetch('/api/airdrop', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -1303,12 +1338,27 @@
 
         async function initCreateScreen() {
             const type = document.getElementById('airdropTypeSelect').value
+            const mode = document.getElementById('spaceModeSelect').value
+            spaceMode = mode
+
             if (type === 'space') {
-                document.getElementById('holderSection').classList.remove('hidden')
-                document.getElementById('perPersonSummary').classList.remove('hidden')
+                document.getElementById('spaceModeGroup').classList.remove('hidden')
                 document.getElementById('publicTitleGroup').classList.add('hidden')
-                if (!holdersLoaded) fetchHolders()
+
+                if (mode === 'all') {
+                    document.getElementById('holderSection').classList.remove('hidden')
+                    document.getElementById('perPersonSummary').classList.remove('hidden')
+                    document.getElementById('spaceMaxParticipantsGroup').classList.add('hidden')
+                    if (!holdersLoaded) fetchHolders()
+                } else {
+                    // "join" mode: holders info still useful for context, but participants are 0
+                    document.getElementById('holderSection').classList.remove('hidden')
+                    document.getElementById('perPersonSummary').classList.add('hidden')
+                    document.getElementById('spaceMaxParticipantsGroup').classList.remove('hidden')
+                    if (!holdersLoaded) fetchHolders()
+                }
             } else {
+                document.getElementById('spaceModeGroup').classList.add('hidden')
                 document.getElementById('holderSection').classList.add('hidden')
                 document.getElementById('perPersonSummary').classList.add('hidden')
                 document.getElementById('publicTitleGroup').classList.remove('hidden')
@@ -1414,6 +1464,14 @@
             initCreateScreen()
         })
 
+        document.getElementById('spaceModeSelect').addEventListener('change', () => {
+            initCreateScreen()
+        })
+
+        document.getElementById('spaceMaxParticipantsInput').addEventListener('input', () => {
+            validateCreateForm()
+        })
+
         document.getElementById('currencySelect').addEventListener('change', () => {
             const val = document.getElementById('currencySelect').value
             const custom = document.getElementById('customCurrencyGroup')
@@ -1489,7 +1547,11 @@
             const wei = tokensToWei(amount)
 
             let valid = !!wei && BigInt(wei) > 0n
-            if (type === 'space' && holderCount === 0) valid = false
+            if (type === 'space' && spaceMode === 'all' && holderCount === 0) valid = false
+            if (type === 'space' && spaceMode === 'join') {
+                const maxP = parseInt(document.getElementById('spaceMaxParticipantsInput').value.trim(), 10)
+                if (!maxP || maxP < 1) valid = false
+            }
             if (document.getElementById('currencySelect').value === 'custom') {
                 const addr = document.getElementById('customCurrencyInput').value.trim()
                 if (!/^0x[a-fA-F0-9]{40}$/.test(addr)) valid = false
@@ -1597,10 +1659,17 @@
 
             try {
                 await ensureTreasuryAddress()
-                const title = document.getElementById('airdropTitleInput').value.trim()
-                const desc = document.getElementById('airdropDescInput').value.trim()
-                const maxPInput = document.getElementById('maxParticipantsInput').value.trim()
-                const maxP = (type === 'public' && maxPInput) ? parseInt(maxPInput, 10) : 0
+                const isSpaceJoin = type === 'space' && spaceMode === 'join'
+                const title = isSpaceJoin
+                    ? document.getElementById('spaceTitleInput').value.trim()
+                    : document.getElementById('airdropTitleInput').value.trim()
+                const desc = isSpaceJoin
+                    ? document.getElementById('spaceDescInput').value.trim()
+                    : document.getElementById('airdropDescInput').value.trim()
+                const maxPInput = isSpaceJoin
+                    ? document.getElementById('spaceMaxParticipantsInput').value.trim()
+                    : document.getElementById('maxParticipantsInput').value.trim()
+                const maxP = ((type === 'public' || isSpaceJoin) && maxPInput) ? parseInt(maxPInput, 10) : 0
                 const airdrop = await apiCreateAirdrop(
                     type,
                     wei,
@@ -1609,9 +1678,10 @@
                     getActiveDecimals(),
                     context?.user?.displayName || '',
                     getTokenSymbol(),
-                    type === 'public' ? title : '',
-                    type === 'public' ? desc : '',
-                    maxP > 0 ? maxP : 0
+                    (type === 'public' || isSpaceJoin) ? title : '',
+                    (type === 'public' || isSpaceJoin) ? desc : '',
+                    maxP > 0 ? maxP : 0,
+                    isSpaceJoin
                 )
                 currentAirdrop = airdrop
                 await openDepositScreen(airdrop, amount)
@@ -1854,7 +1924,7 @@
 
                 drops.forEach(drop => {
                     const isCreator = drop.creatorAddress?.toLowerCase() === userId
-                    const canJoin = drop.status === 'funded' && drop.airdropType === 'public'
+                    const canJoin = drop.status === 'funded' && (drop.airdropType === 'public' || drop.isSpaceJoinMode)
                     const alreadyJoined = isUserInParticipants(drop.participants)
 
                     const titleHtml = drop.title
@@ -1864,9 +1934,14 @@
                         ? `<div style="font-size:12px; opacity:0.7; margin-bottom:6px;">${renderDescription(drop.description)}</div>`
                         : ''
 
+                    const spaceTagHtml = drop.isSpaceJoinMode
+                        ? `<div style="display:inline-block; background:rgba(234,179,8,0.15); color:#fbbf24; border:1px solid rgba(234,179,8,0.3); border-radius:6px; padding:2px 8px; font-size:11px; font-weight:600; margin-bottom:6px;">&#128274; Space Members Only${drop.spaceName ? ' — ' + escapeHtml(drop.spaceName) : ''}</div>`
+                        : ''
+
                     const card = document.createElement('div')
                     card.className = 'airdrop-card'
                     card.innerHTML = `
+                        ${spaceTagHtml}
                         ${titleHtml}
                         ${descHtml}
                         <div class="airdrop-card-header">
@@ -2022,9 +2097,13 @@
                 descEl.classList.add('hidden')
             }
 
-            const typeLabel = airdrop.airdropType === 'space'
-                ? (airdrop.spaceName ? airdrop.spaceName + ' Members' : 'Space Members')
-                : 'Public'
+            let typeLabel = 'Public'
+            if (airdrop.airdropType === 'space') {
+                const spaceLbl = airdrop.spaceName || 'Space'
+                typeLabel = airdrop.isSpaceJoinMode
+                    ? spaceLbl + ' Members (Joinable)'
+                    : spaceLbl + ' Members'
+            }
             document.getElementById('statusType').textContent = typeLabel
             const dec = airdrop.currencyDecimals ?? 18
             const sym = airdrop.currencySymbol ? '$' + airdrop.currencySymbol : 'tokens'
@@ -2066,14 +2145,27 @@
             const userId = context?.towns?.user?.userId?.toLowerCase() || ''
             const isCreator = airdrop.creatorAddress?.toLowerCase() === userId
             const isPublic = airdrop.airdropType === 'public'
+            const isSpaceJoin = airdrop.isSpaceJoinMode === true
+            const isJoinable = isPublic || isSpaceJoin
             const maxP = airdrop.maxParticipants || 0
 
-            // Join section (public, funded)
+            // Space-restricted join notice
+            const spaceJoinNotice = document.getElementById('statusSpaceJoinNotice')
+            if (isSpaceJoin) {
+                spaceJoinNotice.classList.remove('hidden')
+                document.getElementById('statusSpaceName').textContent = airdrop.spaceName || 'this space'
+                document.getElementById('statusSpaceJoinSlots').textContent = airdrop.recipientCount
+                document.getElementById('statusSpaceJoinMax').textContent = maxP
+            } else {
+                spaceJoinNotice.classList.add('hidden')
+            }
+
+            // Join section (public or joinable space, funded)
             const joinSection = document.getElementById('statusJoinSection')
             const alreadyJoined = isUserInParticipants(airdrop.participants)
             const isFull = maxP > 0 && airdrop.recipientCount >= maxP
             const joinBtn = document.getElementById('statusJoinBtn')
-            if (isPublic && airdrop.status === 'funded') {
+            if (isJoinable && airdrop.status === 'funded') {
                 joinSection.classList.remove('hidden')
                 if (alreadyJoined) {
                     joinBtn.innerHTML = '&#10003; Joined'
@@ -2084,7 +2176,7 @@
                     joinBtn.className = 'secondary'
                     joinBtn.disabled = true
                 } else {
-                    joinBtn.textContent = 'Join This Airdrop'
+                    joinBtn.textContent = isSpaceJoin ? 'Join (Space Members Only)' : 'Join This Airdrop'
                     joinBtn.className = ''
                     joinBtn.disabled = false
                 }
@@ -2094,7 +2186,7 @@
 
             // Participants list
             const partSection = document.getElementById('statusParticipantsSection')
-            if (isPublic && airdrop.participants?.length > 0) {
+            if (isJoinable && airdrop.participants?.length > 0) {
                 partSection.classList.remove('hidden')
                 const listEl = document.getElementById('statusParticipantsList')
                 const names = airdrop.participantNames || {}
@@ -2124,9 +2216,9 @@
                 pendingSection.classList.add('hidden')
             }
 
-            // Manage section (creator, public, funded, has participants)
+            // Manage section (creator, joinable, funded, has participants)
             const manageSection = document.getElementById('statusManageSection')
-            if (isCreator && isPublic && airdrop.status === 'funded' && airdrop.recipientCount > 0) {
+            if (isCreator && isJoinable && airdrop.status === 'funded' && airdrop.recipientCount > 0) {
                 manageSection.classList.remove('hidden')
             } else {
                 manageSection.classList.add('hidden')

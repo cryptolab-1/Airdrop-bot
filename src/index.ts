@@ -234,7 +234,8 @@ function airdropToResponse(a: Airdrop) {
         description: a.description || null,
         maxParticipants: a.maxParticipants || 0,
         createdAt: a.createdAt,
-        mode: a.airdropType === 'space' ? 'fixed' : 'react', // backward compat
+        isSpaceJoinMode: a.airdropType === 'space' && (a.maxParticipants || 0) > 0,
+        mode: (a.airdropType === 'space' && (a.maxParticipants || 0) === 0) ? 'fixed' : 'react', // backward compat
     }
 }
 
@@ -706,13 +707,16 @@ bot.onInteractionResponse(async (handler, event) => {
             }
         }
 
-        // Space airdrops auto-distribute
-        if (airdrop.airdropType === 'space' && airdrop.participants.length > 0) {
+        // Space airdrops: auto-distribute if all-holders mode, or wait for joins if join mode
+        const isJoinableSpace = airdrop.airdropType === 'space' && (airdrop.maxParticipants || 0) > 0
+        if (airdrop.airdropType === 'space' && !isJoinableSpace && airdrop.participants.length > 0) {
             updateAirdrop(airdropId, { status: 'distributing', updatedAt: Date.now() })
             await handler.sendMessage(event.channelId, `Deposit confirmed! Distributing to ${airdrop.participants.length} recipients...`)
             // Re-read the latest state for distribution
             const fresh = getAirdrop(airdropId)
             if (fresh) runDistribution(fresh).catch(console.error)
+        } else if (isJoinableSpace) {
+            await handler.sendMessage(event.channelId, `Deposit confirmed! Your space airdrop is now live — space members can join (${airdrop.maxParticipants} slots).`)
         } else if (airdrop.airdropType === 'public') {
             await handler.sendMessage(event.channelId, 'Deposit confirmed! Your public airdrop is now live.')
         }
@@ -1084,6 +1088,7 @@ app.post('/api/airdrop', async (c) => {
             currencySymbol: rawSymbol, spaceId, currencyDecimals: rawDecimals,
             creatorDisplayName, title: rawTitle, description: rawDescription,
             maxParticipants: rawMaxParticipants,
+            spaceJoinMode: rawSpaceJoinMode,
         } = body
 
         if (!airdropType || !totalAmount || !creatorAddress) {
@@ -1112,12 +1117,14 @@ app.post('/api/airdrop', async (c) => {
         let participants: string[] = []
         let spaceNftAddress: string | undefined
 
+        const isSpaceJoinMode = airdropType === 'space' && rawSpaceJoinMode === true
+
         if (airdropType === 'space') {
             const extractedAddress = spaceId ? extractAddressFromStreamId(spaceId) : null
             const nftAddress = extractedAddress
                 || (process.env.AIRDROP_MEMBERSHIP_NFT_ADDRESS ?? '').trim()
 
-            console.log(`[Airdrop] spaceId=${spaceId}, extracted=${extractedAddress}, nftAddress=${nftAddress}`)
+            console.log(`[Airdrop] spaceId=${spaceId}, extracted=${extractedAddress}, nftAddress=${nftAddress}, joinMode=${isSpaceJoinMode}`)
 
             if (!isEthAddress(nftAddress)) {
                 return c.json({ error: 'No valid spaceId provided and AIRDROP_MEMBERSHIP_NFT_ADDRESS not configured' }, 400)
@@ -1128,43 +1135,60 @@ app.post('/api/airdrop', async (c) => {
             // Ensure space name is cached (for leaderboard & display)
             fetchSpaceName(nftAddress).catch(() => {})
 
-            // Check DB cache for space holders first
-            const cached = getSpaceHolders(nftAddress)
-            if (cached && !isSpaceHoldersStale(nftAddress)) {
-                console.log(`[Airdrop] Using cached ${cached.length} holders for ${nftAddress}`)
-                // Apply exclude filter
-                const excludeSet = new Set(excludeAddresses.map(a => a.toLowerCase()))
-                const botApp = (bot.appAddress ?? '').toLowerCase()
-                const botId = (bot.viem.account.address ?? '').toLowerCase()
-                participants = cached.filter(a => {
-                    const lower = a.toLowerCase()
-                    return lower !== botApp && lower !== botId && !excludeSet.has(lower)
-                })
-            } else {
-                // Fetch from chain
-                const holders = await getMembershipNftHolderAddresses(
-                    bot as AnyBot,
-                    nftAddress as Address,
-                )
-
-                participants = (
-                    await getUniqueRecipientAddresses(
+            if (isSpaceJoinMode) {
+                // Join mode: don't populate participants, they'll join later
+                // Still ensure holders are cached so we can validate joins
+                const cached = getSpaceHolders(nftAddress)
+                if (!cached || isSpaceHoldersStale(nftAddress)) {
+                    const holders = await getMembershipNftHolderAddresses(
                         bot as AnyBot,
-                        holders.map((a) => a as string),
-                        {
-                            excludeAddresses:
-                                excludeAddresses.length > 0 ? excludeAddresses : undefined,
-                            onlyResolved: false,
-                        },
+                        nftAddress as Address,
                     )
-                ).map((a) => a as string)
-
-                // Save to DB cache
-                saveSpaceHolders(nftAddress, participants)
-                console.log(`[Airdrop] Cached ${participants.length} holders for ${nftAddress}`)
+                    const unique = (
+                        await getUniqueRecipientAddresses(
+                            bot as AnyBot,
+                            holders.map((a) => a as string),
+                            { excludeAddresses: excludeAddresses.length > 0 ? excludeAddresses : undefined, onlyResolved: false },
+                        )
+                    ).map((a) => a as string)
+                    saveSpaceHolders(nftAddress, unique)
+                    console.log(`[Airdrop] Cached ${unique.length} holders for join-mode validation`)
+                }
+                recipientCount = 0
+                participants = []
+            } else {
+                // All-holders mode: populate participants as before
+                const cached = getSpaceHolders(nftAddress)
+                if (cached && !isSpaceHoldersStale(nftAddress)) {
+                    console.log(`[Airdrop] Using cached ${cached.length} holders for ${nftAddress}`)
+                    const excludeSet = new Set(excludeAddresses.map(a => a.toLowerCase()))
+                    const botApp = (bot.appAddress ?? '').toLowerCase()
+                    const botId = (bot.viem.account.address ?? '').toLowerCase()
+                    participants = cached.filter(a => {
+                        const lower = a.toLowerCase()
+                        return lower !== botApp && lower !== botId && !excludeSet.has(lower)
+                    })
+                } else {
+                    const holders = await getMembershipNftHolderAddresses(
+                        bot as AnyBot,
+                        nftAddress as Address,
+                    )
+                    participants = (
+                        await getUniqueRecipientAddresses(
+                            bot as AnyBot,
+                            holders.map((a) => a as string),
+                            {
+                                excludeAddresses:
+                                    excludeAddresses.length > 0 ? excludeAddresses : undefined,
+                                onlyResolved: false,
+                            },
+                        )
+                    ).map((a) => a as string)
+                    saveSpaceHolders(nftAddress, participants)
+                    console.log(`[Airdrop] Cached ${participants.length} holders for ${nftAddress}`)
+                }
+                recipientCount = participants.length
             }
-
-            recipientCount = participants.length
         }
         // For 'public' airdrops, participants join later
 
@@ -1198,7 +1222,7 @@ app.post('/api/airdrop', async (c) => {
             taxHolders,
             title: typeof rawTitle === 'string' ? rawTitle.trim().slice(0, 100) : undefined,
             description: typeof rawDescription === 'string' ? rawDescription.trim().slice(0, 500) : undefined,
-            maxParticipants: (airdropType === 'public' && typeof rawMaxParticipants === 'number' && rawMaxParticipants > 0)
+            maxParticipants: ((airdropType === 'public' || isSpaceJoinMode) && typeof rawMaxParticipants === 'number' && rawMaxParticipants > 0)
                 ? rawMaxParticipants
                 : 0,
             createdAt: Date.now(),
@@ -1341,8 +1365,9 @@ app.post('/api/airdrop/:id/confirm-deposit', async (c) => {
             }
         }
 
-        // Space airdrops auto-distribute once funded
-        if (airdrop.airdropType === 'space' && airdrop.participants.length > 0) {
+        // Space airdrops: auto-distribute if all-holders mode, skip for join mode
+        const isJoinableSpaceDeposit = airdrop.airdropType === 'space' && (airdrop.maxParticipants || 0) > 0
+        if (airdrop.airdropType === 'space' && !isJoinableSpaceDeposit && airdrop.participants.length > 0) {
             updateAirdrop(airdrop.id, { status: 'distributing', updatedAt: Date.now() })
             const fresh = getAirdrop(airdrop.id)
             if (fresh) runDistribution(fresh).catch(console.error)
@@ -1356,15 +1381,17 @@ app.post('/api/airdrop/:id/confirm-deposit', async (c) => {
     }
 })
 
-// Join airdrop (public only)
+// Join airdrop (public or joinable space airdrops)
 app.post('/api/airdrop/:id/join', async (c) => {
     const airdrop = getAirdrop(c.req.param('id'))
     if (!airdrop) {
         return c.json({ error: 'Airdrop not found' }, 404)
     }
 
-    if (airdrop.airdropType !== 'public') {
-        return c.json({ error: 'Cannot join a space-members airdrop' }, 400)
+    // Allow public airdrops and space airdrops in join mode (maxParticipants > 0 with no pre-populated participants at creation)
+    const isSpaceJoinable = airdrop.airdropType === 'space' && (airdrop.maxParticipants || 0) > 0
+    if (airdrop.airdropType !== 'public' && !isSpaceJoinable) {
+        return c.json({ error: 'Cannot join this airdrop' }, 400)
     }
 
     if (airdrop.status !== 'funded') {
@@ -1398,6 +1425,19 @@ app.post('/api/airdrop/:id/join', async (c) => {
         }
         if (userId && isEthAddress(userId)) {
             setUserWallet(userId, walletAddress)
+        }
+
+        // For joinable space airdrops: verify the user is a space NFT holder
+        if (isSpaceJoinable && airdrop.spaceNftAddress) {
+            const holders = getSpaceHolders(airdrop.spaceNftAddress)
+            if (holders) {
+                const isHolder = holders.some(h => h.toLowerCase() === walletAddress.toLowerCase())
+                if (!isHolder) {
+                    return c.json({ error: 'Only space members can join this airdrop' }, 403)
+                }
+            } else {
+                console.warn(`[Join] No cached holders for ${airdrop.spaceNftAddress}, allowing join`)
+            }
         }
 
         // Check max participants

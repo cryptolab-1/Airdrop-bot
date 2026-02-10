@@ -382,7 +382,10 @@ export function updateAirdrop(id: string, fields: Partial<Airdrop>): void {
 
 export function listPublicAirdrops(): Airdrop[] {
     const rows = db.query(
-        `SELECT * FROM airdrops WHERE airdrop_type = 'public' AND status IN ('pending','funded') ORDER BY created_at DESC`,
+        `SELECT * FROM airdrops
+         WHERE (airdrop_type = 'public' OR (airdrop_type = 'space' AND max_participants > 0))
+           AND status IN ('pending','funded')
+         ORDER BY created_at DESC`,
     ).all() as AirdropRow[]
     return rows.map(rowToAirdrop)
 }
@@ -395,10 +398,11 @@ export function listAirdropsByCreator(address: string): Airdrop[] {
 }
 
 export function listAirdropHistory(): Airdrop[] {
-    // All airdrops except public ones that are still pending/funded (those stay in "Join Public")
+    // All airdrops except joinable ones that are still pending/funded (those stay in "Join" screen)
     const rows = db.query(`
         SELECT * FROM airdrops
         WHERE NOT (airdrop_type = 'public' AND status IN ('pending','funded'))
+          AND NOT (airdrop_type = 'space' AND max_participants > 0 AND status IN ('pending','funded'))
         ORDER BY created_at DESC
         LIMIT 100
     `).all() as AirdropRow[]
