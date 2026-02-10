@@ -845,6 +845,11 @@
                 <div id="statusError" class="error hidden"></div>
                 <div class="poll-status" id="pollStatus"></div>
 
+                <!-- Airdrop ID (admin only) -->
+                <div id="statusAirdropIdRow" class="hidden" style="margin-top:12px; text-align:center;">
+                    <span style="font-size:11px; font-family:monospace; opacity:0.35; user-select:all;" id="statusAirdropId"></span>
+                </div>
+
                 <div class="divider"></div>
                 <button class="secondary" id="statusHomeBtn">Back to Home</button>
             </div>
@@ -2313,6 +2318,14 @@
                 adminSection.classList.add('hidden')
             }
 
+            // Airdrop ID (visible to all)
+            if (airdrop.id) {
+                document.getElementById('statusAirdropId').textContent = airdrop.id
+                document.getElementById('statusAirdropIdRow').classList.remove('hidden')
+            } else {
+                document.getElementById('statusAirdropIdRow').classList.add('hidden')
+            }
+
             // Result section
             const resultSection = document.getElementById('statusResultSection')
             const resultMsg = document.getElementById('statusResultMessage')
@@ -2513,10 +2526,16 @@
                 return `<div class="link-preview"><a href="${escapeHtml(url)}" target="_blank" rel="noopener">${escapeHtml(domain)}</a><br/><span style="opacity:0.5; font-size:11px;">${escapeHtml(url)}</span></div>`
             }
 
-            // Otherwise, escape HTML and turn URLs into clickable links
+            // Otherwise, escape HTML and turn URLs into clickable links (shortened display)
             const escaped = escapeHtml(desc)
             return escaped.replace(/(https?:\/\/[^\s<]+)/g, (url) => {
-                return `<a href="${url}" target="_blank" rel="noopener">${url}</a>`
+                let label = url
+                try {
+                    const u = new URL(url)
+                    const path = u.pathname === '/' ? '' : u.pathname
+                    label = u.hostname + (path.length > 20 ? path.slice(0, 20) + '...' : path)
+                } catch {}
+                return `<a href="${url}" target="_blank" rel="noopener" style="word-break:break-all;">${label}</a>`
             })
         }
 
