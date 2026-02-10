@@ -989,7 +989,8 @@ app.get('/api/token-info', async (c) => {
 
 // Debug: inspect space holders cache & exclusions
 app.get('/api/debug/space-holders', async (c) => {
-    const nftAddress = (c.req.query('nft') ?? '').trim().toLowerCase()
+    const rawNft = (c.req.query('nft') ?? '').trim()
+    const nftAddress = rawNft.toLowerCase()
     const checkAddress = (c.req.query('check') ?? '').trim().toLowerCase()
     const forceRefresh = c.req.query('refresh') === 'true'
 
@@ -1000,12 +1001,17 @@ app.get('/api/debug/space-holders', async (c) => {
     // Force refresh the cache if requested
     if (forceRefresh) {
         try {
+            console.log(`[Debug] Force refresh starting for ${rawNft}...`)
             const excludeAddresses = (process.env.AIRDROP_EXCLUDE_ADDRESSES ?? '')
                 .split(',').map(s => s.trim()).filter(Boolean)
+
+            console.log(`[Debug] Fetching NFT holders from chain...`)
             const holders = await getMembershipNftHolderAddresses(
                 bot as AnyBot,
-                nftAddress as Address,
+                rawNft as Address, // Use original case for chain call
             )
+            console.log(`[Debug] Got ${holders.length} raw holders, resolving smart accounts...`)
+
             const unique = (
                 await getUniqueRecipientAddresses(
                     bot as AnyBot,
@@ -1014,7 +1020,7 @@ app.get('/api/debug/space-holders', async (c) => {
                 )
             ).map((a) => a as string)
             saveSpaceHolders(nftAddress, unique)
-            console.log(`[Debug] Force-refreshed ${unique.length} holders for ${nftAddress}`)
+            console.log(`[Debug] Force-refreshed: ${holders.length} raw → ${unique.length} resolved holders for ${nftAddress}`)
         } catch (err) {
             console.error(`[Debug] Force refresh failed:`, err)
             return c.json({ error: 'Force refresh failed', details: String(err) }, 500)
