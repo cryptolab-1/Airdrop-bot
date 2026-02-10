@@ -470,6 +470,7 @@
 
             <div id="adminHomeSection" class="hidden" style="margin-top:24px;">
                 <div class="divider"></div>
+                <button id="btnAdminPanel" class="secondary" style="margin-top:8px;">Admin Panel</button>
                 <button id="btnRecoverFunds" class="danger" style="margin-top:8px;">Recover Treasury Funds</button>
             </div>
         </div>
@@ -909,6 +910,70 @@
             </div>
         </div>
 
+        <!-- ===================== ADMIN PANEL SCREEN ===================== -->
+        <div id="adminScreen" class="hidden">
+            <div class="card">
+                <button class="back-btn" id="adminBackBtn">&larr; Back</button>
+                <h2>Admin Panel</h2>
+                <div class="subtitle">Debug tools &amp; cache management</div>
+
+                <!-- Space Holders Inspector -->
+                <div style="margin-top:20px; border:1px solid rgba(139,92,246,0.2); border-radius:12px; padding:16px; background:rgba(139,92,246,0.04);">
+                    <h3 style="margin:0 0 12px; font-size:15px; color:#c4b5fd;">Space Holders Cache</h3>
+
+                    <div class="form-group" style="margin-bottom:8px;">
+                        <label>Space NFT Address</label>
+                        <input type="text" id="adminNftInput" placeholder="0x... (auto-filled from current space)" />
+                    </div>
+                    <div class="form-group" style="margin-bottom:8px;">
+                        <label>Check Address (optional)</label>
+                        <input type="text" id="adminCheckInput" placeholder="0x... userId or smart account to check" />
+                    </div>
+
+                    <div style="display:flex; gap:8px; margin-top:8px;">
+                        <button id="adminInspectBtn" class="sm secondary" style="flex:1;">Inspect Cache</button>
+                        <button id="adminRefreshBtn" class="sm danger" style="flex:1;">Force Refresh</button>
+                    </div>
+
+                    <div id="adminHoldersResult" class="hidden" style="margin-top:12px;"></div>
+                </div>
+
+                <!-- Wallet Resolver -->
+                <div style="margin-top:16px; border:1px solid rgba(139,92,246,0.2); border-radius:12px; padding:16px; background:rgba(139,92,246,0.04);">
+                    <h3 style="margin:0 0 12px; font-size:15px; color:#c4b5fd;">Wallet Resolver</h3>
+
+                    <div class="form-group" style="margin-bottom:8px;">
+                        <label>User ID (0x...)</label>
+                        <input type="text" id="adminResolveInput" placeholder="0x... Towns userId to resolve" />
+                    </div>
+
+                    <button id="adminResolveBtn" class="sm secondary" style="width:100%;">Resolve Smart Account</button>
+
+                    <div id="adminResolveResult" class="hidden" style="margin-top:12px;"></div>
+                </div>
+
+                <!-- Airdrop Inspector -->
+                <div style="margin-top:16px; border:1px solid rgba(139,92,246,0.2); border-radius:12px; padding:16px; background:rgba(139,92,246,0.04);">
+                    <h3 style="margin:0 0 12px; font-size:15px; color:#c4b5fd;">Airdrop Inspector</h3>
+
+                    <div class="form-group" style="margin-bottom:8px;">
+                        <label>Airdrop ID</label>
+                        <input type="text" id="adminAirdropIdInput" placeholder="airdrop_..." />
+                    </div>
+
+                    <button id="adminAirdropBtn" class="sm secondary" style="width:100%;">Inspect Airdrop</button>
+
+                    <div id="adminAirdropResult" class="hidden" style="margin-top:12px;"></div>
+                </div>
+
+                <!-- Bot Info -->
+                <div style="margin-top:16px; border:1px solid rgba(139,92,246,0.2); border-radius:12px; padding:16px; background:rgba(139,92,246,0.04);">
+                    <h3 style="margin:0 0 12px; font-size:15px; color:#c4b5fd;">Bot Info</h3>
+                    <div id="adminBotInfo" style="font-size:12px; font-family:monospace; word-break:break-all; line-height:1.8; opacity:0.7;">Loading...</div>
+                </div>
+            </div>
+        </div>
+
         <!-- ===================== RECOVER FUNDS SCREEN ===================== -->
         <div id="recoverScreen" class="hidden">
             <div class="card">
@@ -1020,7 +1085,7 @@
         // ==================================================================
         // Screen navigation
         // ==================================================================
-        const screens = ['homeScreen', 'createScreen', 'depositScreen', 'publicScreen', 'statusScreen', 'leaderboardScreen', 'historyScreen', 'recoverScreen']
+        const screens = ['homeScreen', 'createScreen', 'depositScreen', 'publicScreen', 'statusScreen', 'leaderboardScreen', 'historyScreen', 'adminScreen', 'recoverScreen']
         const screenHistory = ['homeScreen']
 
         function showScreen(name, skipHistory) {
@@ -2640,6 +2705,189 @@
                 btn.disabled = false
                 delete btn.dataset.confirmed
                 btn.textContent = 'Reset History'
+            }
+        })
+
+        // ==================================================================
+        // ADMIN PANEL SCREEN
+        // ==================================================================
+        document.getElementById('btnAdminPanel').addEventListener('click', () => {
+            showScreen('adminScreen')
+            initAdminPanel()
+        })
+
+        document.getElementById('adminBackBtn').addEventListener('click', () => {
+            goBack()
+        })
+
+        function initAdminPanel() {
+            // Auto-fill NFT address from current space
+            const spaceAddr = getSpaceAddress()
+            if (spaceAddr) {
+                document.getElementById('adminNftInput').value = spaceAddr
+            }
+
+            // Auto-fill check address with current user
+            const userId = context?.towns?.user?.userId || ''
+            if (userId) {
+                document.getElementById('adminCheckInput').value = userId
+                document.getElementById('adminResolveInput').value = userId
+            }
+
+            // Load bot info
+            loadBotInfo()
+        }
+
+        async function loadBotInfo() {
+            try {
+                const res = await fetch('/api/config')
+                const cfg = await res.json()
+                const treasury = await ensureTreasuryAddress()
+                document.getElementById('adminBotInfo').innerHTML = `
+                    <div><strong>Treasury:</strong> ${treasury || 'unknown'}</div>
+                    <div><strong>Admin:</strong> ${cfg.adminAddress || 'none'}</div>
+                    <div><strong>Tax:</strong> ${cfg.taxPercent}% holder + ${cfg.adminTaxPercent}% admin = ${cfg.totalTaxPercent}%</div>
+                    <div><strong>Tax NFT:</strong> ${cfg.taxNftAddress || 'none'}</div>
+                `
+            } catch (err) {
+                document.getElementById('adminBotInfo').textContent = 'Failed to load: ' + err.message
+            }
+        }
+
+        function renderDebugResult(data, targetEl) {
+            let html = '<div style="background:rgba(0,0,0,0.3); border-radius:8px; padding:12px; font-size:12px; font-family:monospace; line-height:1.8; max-height:400px; overflow-y:auto; word-break:break-all;">'
+            for (const [key, val] of Object.entries(data)) {
+                if (key === 'holders' && Array.isArray(val)) {
+                    html += `<div><strong style="color:#c4b5fd;">${key}:</strong> <span style="opacity:0.5;">${val.length} addresses</span>`
+                    html += `<div id="adminHoldersList" class="hidden" style="margin-left:12px; margin-top:4px;">`
+                    val.forEach((h, i) => {
+                        html += `<div style="opacity:0.6;">${i}: ${h}</div>`
+                    })
+                    html += `</div><button class="sm secondary" style="margin-top:4px; font-size:10px; padding:2px 8px;" onclick="document.getElementById('adminHoldersList').classList.toggle('hidden')">Toggle List</button></div>`
+                } else if (key === 'check' && typeof val === 'object') {
+                    html += `<div style="margin-top:8px; border-top:1px solid rgba(255,255,255,0.1); padding-top:8px;"><strong style="color:#fbbf24;">CHECK RESULT:</strong></div>`
+                    for (const [ck, cv] of Object.entries(val)) {
+                        const color = ck === 'reason' ? '#fbbf24'
+                            : ck === 'wouldBeIncluded' ? (cv ? '#4ade80' : '#f87171')
+                            : ck === 'inHoldersCache' || ck === 'smartAccountInCache' ? (cv ? '#4ade80' : '#f87171')
+                            : '#c4b5fd'
+                        html += `<div><strong style="color:${color};">${ck}:</strong> ${typeof cv === 'object' ? JSON.stringify(cv) : cv}</div>`
+                    }
+                } else if (typeof val === 'object' && val !== null) {
+                    html += `<div><strong style="color:#c4b5fd;">${key}:</strong> ${JSON.stringify(val)}</div>`
+                } else {
+                    const color = key === 'wasRefreshed' && val ? '#4ade80'
+                        : key === 'isStale' && val ? '#f87171'
+                        : '#c4b5fd'
+                    html += `<div><strong style="color:${color};">${key}:</strong> ${val}</div>`
+                }
+            }
+            html += '</div>'
+            targetEl.innerHTML = html
+            targetEl.classList.remove('hidden')
+        }
+
+        // Space Holders - Inspect
+        document.getElementById('adminInspectBtn').addEventListener('click', async () => {
+            const nft = document.getElementById('adminNftInput').value.trim()
+            const check = document.getElementById('adminCheckInput').value.trim()
+            if (!nft) return alert('Enter a Space NFT address')
+
+            const btn = document.getElementById('adminInspectBtn')
+            btn.disabled = true
+            btn.textContent = 'Loading...'
+            const resultEl = document.getElementById('adminHoldersResult')
+
+            try {
+                let url = `/api/debug/space-holders?nft=${encodeURIComponent(nft)}`
+                if (check) url += `&check=${encodeURIComponent(check)}`
+                const res = await fetch(url)
+                const data = await res.json()
+                if (!res.ok) throw new Error(data.error || 'Request failed')
+                renderDebugResult(data, resultEl)
+            } catch (err) {
+                resultEl.innerHTML = `<div class="error">${err.message}</div>`
+                resultEl.classList.remove('hidden')
+            } finally {
+                btn.disabled = false
+                btn.textContent = 'Inspect Cache'
+            }
+        })
+
+        // Space Holders - Force Refresh
+        document.getElementById('adminRefreshBtn').addEventListener('click', async () => {
+            const nft = document.getElementById('adminNftInput').value.trim()
+            const check = document.getElementById('adminCheckInput').value.trim()
+            if (!nft) return alert('Enter a Space NFT address')
+
+            if (!confirm('Force refresh will re-fetch all holders from chain. Continue?')) return
+
+            const btn = document.getElementById('adminRefreshBtn')
+            btn.disabled = true
+            btn.textContent = 'Refreshing...'
+            const resultEl = document.getElementById('adminHoldersResult')
+
+            try {
+                let url = `/api/debug/space-holders?nft=${encodeURIComponent(nft)}&refresh=true`
+                if (check) url += `&check=${encodeURIComponent(check)}`
+                const res = await fetch(url)
+                const data = await res.json()
+                if (!res.ok) throw new Error(data.error || data.details || 'Refresh failed')
+                renderDebugResult(data, resultEl)
+            } catch (err) {
+                resultEl.innerHTML = `<div class="error">${err.message}</div>`
+                resultEl.classList.remove('hidden')
+            } finally {
+                btn.disabled = false
+                btn.textContent = 'Force Refresh'
+            }
+        })
+
+        // Wallet Resolver
+        document.getElementById('adminResolveBtn').addEventListener('click', async () => {
+            const userId = document.getElementById('adminResolveInput').value.trim()
+            if (!userId) return alert('Enter a userId')
+
+            const btn = document.getElementById('adminResolveBtn')
+            btn.disabled = true
+            btn.textContent = 'Resolving...'
+            const resultEl = document.getElementById('adminResolveResult')
+
+            try {
+                const res = await fetch(`/api/debug/resolve-wallet?userId=${encodeURIComponent(userId)}`)
+                const data = await res.json()
+                if (!res.ok) throw new Error(data.error || 'Resolution failed')
+                renderDebugResult(data, resultEl)
+            } catch (err) {
+                resultEl.innerHTML = `<div class="error">${err.message}</div>`
+                resultEl.classList.remove('hidden')
+            } finally {
+                btn.disabled = false
+                btn.textContent = 'Resolve Smart Account'
+            }
+        })
+
+        // Airdrop Inspector
+        document.getElementById('adminAirdropBtn').addEventListener('click', async () => {
+            const airdropId = document.getElementById('adminAirdropIdInput').value.trim()
+            if (!airdropId) return alert('Enter an Airdrop ID')
+
+            const btn = document.getElementById('adminAirdropBtn')
+            btn.disabled = true
+            btn.textContent = 'Loading...'
+            const resultEl = document.getElementById('adminAirdropResult')
+
+            try {
+                const res = await fetch(`/api/airdrop/${encodeURIComponent(airdropId)}`)
+                const data = await res.json()
+                if (!res.ok) throw new Error(data.error || 'Airdrop not found')
+                renderDebugResult(data, resultEl)
+            } catch (err) {
+                resultEl.innerHTML = `<div class="error">${err.message}</div>`
+                resultEl.classList.remove('hidden')
+            } finally {
+                btn.disabled = false
+                btn.textContent = 'Inspect Airdrop'
             }
         })
 

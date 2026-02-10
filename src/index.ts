@@ -988,12 +988,37 @@ app.get('/api/token-info', async (c) => {
 })
 
 // Debug: inspect space holders cache & exclusions
-app.get('/api/debug/space-holders', (c) => {
+app.get('/api/debug/space-holders', async (c) => {
     const nftAddress = (c.req.query('nft') ?? '').trim().toLowerCase()
     const checkAddress = (c.req.query('check') ?? '').trim().toLowerCase()
+    const forceRefresh = c.req.query('refresh') === 'true'
 
     if (!nftAddress) {
         return c.json({ error: 'Missing ?nft= parameter (space NFT address)' }, 400)
+    }
+
+    // Force refresh the cache if requested
+    if (forceRefresh) {
+        try {
+            const excludeAddresses = (process.env.AIRDROP_EXCLUDE_ADDRESSES ?? '')
+                .split(',').map(s => s.trim()).filter(Boolean)
+            const holders = await getMembershipNftHolderAddresses(
+                bot as AnyBot,
+                nftAddress as Address,
+            )
+            const unique = (
+                await getUniqueRecipientAddresses(
+                    bot as AnyBot,
+                    holders.map((a) => a as string),
+                    { excludeAddresses: excludeAddresses.length > 0 ? excludeAddresses : undefined, onlyResolved: false },
+                )
+            ).map((a) => a as string)
+            saveSpaceHolders(nftAddress, unique)
+            console.log(`[Debug] Force-refreshed ${unique.length} holders for ${nftAddress}`)
+        } catch (err) {
+            console.error(`[Debug] Force refresh failed:`, err)
+            return c.json({ error: 'Force refresh failed', details: String(err) }, 500)
+        }
     }
 
     const holders = getSpaceHolders(nftAddress)
@@ -1009,6 +1034,7 @@ app.get('/api/debug/space-holders', (c) => {
         cachedHolderCount: holders?.length ?? 0,
         lastUpdated: lastUpdated ? new Date(lastUpdated).toISOString() : null,
         isStale,
+        wasRefreshed: forceRefresh,
         excludeAddresses,
         botAppAddress: botApp,
         botIdAddress: botId,
@@ -1020,14 +1046,33 @@ app.get('/api/debug/space-holders', (c) => {
         const isExcluded = excludeAddresses.includes(checkAddress)
         const isBotApp = checkAddress === botApp
         const isBotId = checkAddress === botId
+
+        // Try to resolve userId → smart account to help debug
+        let resolvedSmartAccount: string | null = null
+        let resolvedInCache = false
+        if (isEthAddress(checkAddress)) {
+            try {
+                const sa = await getSmartAccountFromUserId(bot as AnyBot, { userId: checkAddress as `0x${string}` })
+                resolvedSmartAccount = (sa as string).toLowerCase()
+                resolvedInCache = holders?.some(h => h.toLowerCase() === resolvedSmartAccount) ?? false
+            } catch (err) {
+                resolvedSmartAccount = `resolution failed: ${String(err)}`
+            }
+        }
+
         result.check = {
             address: checkAddress,
             inHoldersCache: inCache,
+            resolvedSmartAccount,
+            smartAccountInCache: resolvedInCache,
             isExcluded,
             isBotApp,
             isBotId,
             wouldBeIncluded: inCache && !isExcluded && !isBotApp && !isBotId,
-            reason: !inCache ? 'NOT in holders cache (not an NFT holder or cache stale)'
+            reason: !inCache && !resolvedInCache
+                ? 'NOT in holders cache — try checking with your smart account address, or force refresh with &refresh=true'
+                : !inCache && resolvedInCache
+                ? `Your userId is not in cache, but your smart account (${resolvedSmartAccount}) IS — the bot uses smart accounts for matching`
                 : isExcluded ? 'In AIRDROP_EXCLUDE_ADDRESSES list'
                 : isBotApp ? 'Filtered as bot app address'
                 : isBotId ? 'Filtered as bot signer address'
@@ -1036,6 +1081,35 @@ app.get('/api/debug/space-holders', (c) => {
     }
 
     return c.json(result)
+})
+
+// Debug: resolve userId → smart account
+app.get('/api/debug/resolve-wallet', async (c) => {
+    const userId = (c.req.query('userId') ?? '').trim()
+    if (!userId || !isEthAddress(userId)) {
+        return c.json({ error: 'Missing or invalid ?userId= parameter' }, 400)
+    }
+
+    try {
+        const smartAccount = await getSmartAccountFromUserId(bot as AnyBot, { userId: userId as `0x${string}` })
+        const walletAddress = (smartAccount as string).toLowerCase()
+
+        // Also check if there's a stored mapping
+        const storedWallet = getUserWallet(userId)
+
+        return c.json({
+            userId: userId.toLowerCase(),
+            resolvedSmartAccount: walletAddress,
+            storedWalletMapping: storedWallet || null,
+            match: storedWallet ? storedWallet.toLowerCase() === walletAddress : null,
+        })
+    } catch (err) {
+        return c.json({
+            userId: userId.toLowerCase(),
+            resolvedSmartAccount: null,
+            error: `Resolution failed: ${String(err)}`,
+        })
+    }
 })
 
 // Public config (tax rate, etc.)
@@ -1048,6 +1122,7 @@ app.get('/api/config', (c) => {
         taxEnabled: AIRDROP_TAX_PERCENT > 0 && isEthAddress(AIRDROP_TAX_NFT_ADDRESS),
         adminTaxEnabled: AIRDROP_ADMIN_TAX_PERCENT > 0 && isEthAddress(BOT_ADMIN_ADDRESS),
         taxHolderCount: getTaxHolderCount(),
+        taxNftAddress: AIRDROP_TAX_NFT_ADDRESS || null,
         botAddress: bot.appAddress,
         adminAddress: ADMIN_RIGHTS ? ADMIN_RIGHTS.toLowerCase() : null,
     })
