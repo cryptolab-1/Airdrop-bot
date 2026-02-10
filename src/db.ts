@@ -33,6 +33,8 @@ export interface Airdrop {
     participants: string[]
     taxHolders: string[]
     depositTxHash?: string
+    depositInteractionEventId?: string  // eventId of the deposit interaction request (to remove after confirmation)
+    depositChannelId?: string           // channelId where the deposit interaction was sent
     distributionTxHash?: string
     taxDistributionTxHash?: string
     adminTaxDistributionTxHash?: string
@@ -67,6 +69,8 @@ interface AirdropRow {
     participants: string
     tax_holders: string
     deposit_tx_hash: string | null
+    deposit_interaction_event_id: string | null
+    deposit_channel_id: string | null
     distribution_tx_hash: string | null
     tax_distribution_tx_hash: string | null
     admin_tax_distribution_tx_hash: string | null
@@ -128,6 +132,8 @@ export function initDb(): void {
             participants             TEXT NOT NULL DEFAULT '[]',
             tax_holders              TEXT NOT NULL DEFAULT '[]',
             deposit_tx_hash          TEXT,
+            deposit_interaction_event_id TEXT,
+            deposit_channel_id       TEXT,
             distribution_tx_hash     TEXT,
             tax_distribution_tx_hash TEXT,
             admin_tax_distribution_tx_hash TEXT,
@@ -159,6 +165,12 @@ export function initDb(): void {
     }
     if (!colNames.has('max_participants')) {
         db.run("ALTER TABLE airdrops ADD COLUMN max_participants INTEGER DEFAULT 0")
+    }
+    if (!colNames.has('deposit_interaction_event_id')) {
+        db.run("ALTER TABLE airdrops ADD COLUMN deposit_interaction_event_id TEXT")
+    }
+    if (!colNames.has('deposit_channel_id')) {
+        db.run("ALTER TABLE airdrops ADD COLUMN deposit_channel_id TEXT")
     }
 
     db.run(`
@@ -250,6 +262,8 @@ function rowToAirdrop(row: AirdropRow): Airdrop {
         participants: JSON.parse(row.participants),
         taxHolders: JSON.parse(row.tax_holders),
         depositTxHash: row.deposit_tx_hash ?? undefined,
+        depositInteractionEventId: row.deposit_interaction_event_id ?? undefined,
+        depositChannelId: row.deposit_channel_id ?? undefined,
         distributionTxHash: row.distribution_tx_hash ?? undefined,
         taxDistributionTxHash: row.tax_distribution_tx_hash ?? undefined,
         adminTaxDistributionTxHash: row.admin_tax_distribution_tx_hash ?? undefined,
@@ -273,7 +287,8 @@ const SAVE_SQL = `
         admin_tax_percent, admin_tax_amount, net_amount,
         amount_per_recipient, recipient_count, status,
         participants, tax_holders,
-        deposit_tx_hash, distribution_tx_hash,
+        deposit_tx_hash, deposit_interaction_event_id, deposit_channel_id,
+        distribution_tx_hash,
         tax_distribution_tx_hash, admin_tax_distribution_tx_hash,
         title, description, max_participants,
         created_at, updated_at
@@ -284,7 +299,8 @@ const SAVE_SQL = `
         $admin_tax_percent, $admin_tax_amount, $net_amount,
         $amount_per_recipient, $recipient_count, $status,
         $participants, $tax_holders,
-        $deposit_tx_hash, $distribution_tx_hash,
+        $deposit_tx_hash, $deposit_interaction_event_id, $deposit_channel_id,
+        $distribution_tx_hash,
         $tax_distribution_tx_hash, $admin_tax_distribution_tx_hash,
         $title, $description, $max_participants,
         $created_at, $updated_at
@@ -312,6 +328,8 @@ export function saveAirdrop(a: Airdrop): void {
         $participants: JSON.stringify(a.participants),
         $tax_holders: JSON.stringify(a.taxHolders),
         $deposit_tx_hash: a.depositTxHash ?? null,
+        $deposit_interaction_event_id: a.depositInteractionEventId ?? null,
+        $deposit_channel_id: a.depositChannelId ?? null,
         $distribution_tx_hash: a.distributionTxHash ?? null,
         $tax_distribution_tx_hash: a.taxDistributionTxHash ?? null,
         $admin_tax_distribution_tx_hash: a.adminTaxDistributionTxHash ?? null,
@@ -334,6 +352,8 @@ export function updateAirdrop(id: string, fields: Partial<Airdrop>): void {
 
     if (fields.status !== undefined) mapping.status = { col: 'status', val: fields.status }
     if (fields.depositTxHash !== undefined) mapping.depositTxHash = { col: 'deposit_tx_hash', val: fields.depositTxHash }
+    if (fields.depositInteractionEventId !== undefined) mapping.depositInteractionEventId = { col: 'deposit_interaction_event_id', val: fields.depositInteractionEventId }
+    if (fields.depositChannelId !== undefined) mapping.depositChannelId = { col: 'deposit_channel_id', val: fields.depositChannelId }
     if (fields.distributionTxHash !== undefined) mapping.distributionTxHash = { col: 'distribution_tx_hash', val: fields.distributionTxHash }
     if (fields.taxDistributionTxHash !== undefined) mapping.taxDistributionTxHash = { col: 'tax_distribution_tx_hash', val: fields.taxDistributionTxHash }
     if (fields.adminTaxDistributionTxHash !== undefined) mapping.adminTaxDistributionTxHash = { col: 'admin_tax_distribution_tx_hash', val: fields.adminTaxDistributionTxHash }

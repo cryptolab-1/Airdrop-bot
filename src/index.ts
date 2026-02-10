@@ -696,6 +696,16 @@ bot.onInteractionResponse(async (handler, event) => {
         updateAirdrop(airdropId, { depositTxHash: txHash, status: 'funded', updatedAt: Date.now() })
         console.log('[InteractionResponse] Deposit confirmed for', airdropId)
 
+        // Remove the deposit interaction request from chat
+        if (airdrop.depositInteractionEventId && airdrop.depositChannelId) {
+            try {
+                await handler.removeEvent(airdrop.depositChannelId, airdrop.depositInteractionEventId)
+                console.log('[InteractionResponse] Removed deposit interaction from chat')
+            } catch (err) {
+                console.warn('[InteractionResponse] Failed to remove deposit interaction:', err)
+            }
+        }
+
         // Space airdrops auto-distribute
         if (airdrop.airdropType === 'space' && airdrop.participants.length > 0) {
             updateAirdrop(airdropId, { status: 'distributing', updatedAt: Date.now() })
@@ -1265,7 +1275,7 @@ app.post('/api/airdrop/:id/request-deposit', async (c) => {
         // Send transaction interaction request to the user in the channel
         // Uses the same pattern as the reflex-game example (handler.sendInteractionRequest)
         console.log(`[Deposit] Sending interaction request: ${requestId} to ${userId} in ${channelId}`)
-        await (bot as any).sendInteractionRequest(channelId, {
+        const result = await (bot as any).sendInteractionRequest(channelId, {
             type: 'transaction',
             id: requestId,
             title: 'Airdrop Deposit',
@@ -1278,6 +1288,16 @@ app.post('/api/airdrop/:id/request-deposit', async (c) => {
             },
             recipient: userId,
         })
+
+        // Store the interaction eventId and channelId so we can remove it after confirmation
+        if (result?.eventId) {
+            updateAirdrop(airdrop.id, {
+                depositInteractionEventId: result.eventId,
+                depositChannelId: channelId,
+                updatedAt: Date.now(),
+            })
+            console.log(`[Deposit] Stored interaction eventId: ${result.eventId}`)
+        }
 
         return c.json({ ok: true, message: 'Transaction request sent. Approve it in your Towns chat.' })
     } catch (err) {
@@ -1310,6 +1330,16 @@ app.post('/api/airdrop/:id/confirm-deposit', async (c) => {
         }
 
         updateAirdrop(airdrop.id, { depositTxHash: txHash, status: 'funded', updatedAt: Date.now() })
+
+        // Remove the deposit interaction request from chat
+        if (airdrop.depositInteractionEventId && airdrop.depositChannelId) {
+            try {
+                await (bot as any).removeEvent(airdrop.depositChannelId, airdrop.depositInteractionEventId)
+                console.log('[ConfirmDeposit] Removed deposit interaction from chat')
+            } catch (err) {
+                console.warn('[ConfirmDeposit] Failed to remove deposit interaction:', err)
+            }
+        }
 
         // Space airdrops auto-distribute once funded
         if (airdrop.airdropType === 'space' && airdrop.participants.length > 0) {
