@@ -1120,6 +1120,38 @@ app.post('/api/debug/clear-cache', (c) => {
     return c.json({ ok: true, deleted, message: `Cleared ${deleted} cached entries. Cache will rebuild on next airdrop creation or holder fetch.` })
 })
 
+// Debug: manually add a holder to the space cache
+app.post('/api/debug/add-holder', async (c) => {
+    try {
+        const body = await c.req.json()
+        const nftAddress = (body.nft ?? '').trim().toLowerCase()
+        const holderAddress = (body.holder ?? '').trim().toLowerCase()
+
+        if (!nftAddress || !isEthAddress(nftAddress)) {
+            return c.json({ error: 'Missing or invalid nft address' }, 400)
+        }
+        if (!holderAddress || !isEthAddress(holderAddress)) {
+            return c.json({ error: 'Missing or invalid holder address' }, 400)
+        }
+
+        // Check if already in cache
+        const existing = getSpaceHolders(nftAddress)
+        if (existing && existing.some(h => h.toLowerCase() === holderAddress)) {
+            return c.json({ ok: true, message: 'Address already in cache', holderCount: existing.length })
+        }
+
+        // Add to cache by re-saving the full list with the new holder
+        const holders = existing || []
+        holders.push(holderAddress)
+        saveSpaceHolders(nftAddress, holders)
+        console.log(`[Debug] Manually added holder ${holderAddress} to ${nftAddress} (now ${holders.length} holders)`)
+
+        return c.json({ ok: true, message: `Added ${holderAddress} to cache`, holderCount: holders.length })
+    } catch (err) {
+        return c.json({ error: 'Failed to add holder', details: String(err) }, 500)
+    }
+})
+
 // Debug: resolve userId → smart account
 app.get('/api/debug/resolve-wallet', async (c) => {
     const userId = (c.req.query('userId') ?? '').trim()

@@ -937,6 +937,17 @@
                     </div>
 
                     <div id="adminHoldersResult" class="hidden" style="margin-top:12px;"></div>
+
+                    <!-- Add Holder -->
+                    <div style="margin-top:12px; border-top:1px solid rgba(139,92,246,0.15); padding-top:12px;">
+                        <h4 style="margin:0 0 8px; font-size:13px; color:#c4b5fd;">Add Holder Manually</h4>
+                        <div class="form-group" style="margin-bottom:8px;">
+                            <label>Smart Account Address</label>
+                            <input type="text" id="adminAddHolderInput" placeholder="0x... smart account to add" />
+                        </div>
+                        <button id="adminAddHolderBtn" class="sm secondary" style="width:100%;">Add to Cache</button>
+                        <div id="adminAddHolderResult" class="hidden" style="margin-top:8px;"></div>
+                    </div>
                 </div>
 
                 <!-- Wallet Resolver -->
@@ -2881,6 +2892,36 @@
             } finally {
                 btn.disabled = false
                 btn.textContent = 'Clear Cache'
+            }
+        })
+
+        // Add Holder manually
+        document.getElementById('adminAddHolderBtn').addEventListener('click', async () => {
+            const nft = document.getElementById('adminNftInput').value.trim()
+            const holder = document.getElementById('adminAddHolderInput').value.trim()
+            if (!nft || !holder) return
+
+            const btn = document.getElementById('adminAddHolderBtn')
+            btn.disabled = true
+            btn.textContent = 'Adding...'
+            const resultEl = document.getElementById('adminAddHolderResult')
+
+            try {
+                const res = await fetch('/api/debug/add-holder', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ nft, holder })
+                })
+                const data = await res.json()
+                if (!res.ok) throw new Error(data.error || 'Failed to add')
+                resultEl.innerHTML = `<div class="success">${data.message} (${data.holderCount} total)</div>`
+                resultEl.classList.remove('hidden')
+            } catch (err) {
+                resultEl.innerHTML = `<div class="error">${err.message}</div>`
+                resultEl.classList.remove('hidden')
+            } finally {
+                btn.disabled = false
+                btn.textContent = 'Add to Cache'
             }
         })
 
