@@ -55,6 +55,7 @@ import {
     getUserWallet,
     getUserIdsByWallets,
     deleteAirdrop,
+    listAllAirdrops,
     resetLeaderboard,
     deleteHistoryAirdrops,
 } from './db'
@@ -1194,6 +1195,104 @@ app.get('/api/config', (c) => {
         taxNftAddress: AIRDROP_TAX_NFT_ADDRESS || null,
         botAddress: bot.appAddress,
         adminAddress: ADMIN_RIGHTS ? ADMIN_RIGHTS.toLowerCase() : null,
+    })
+})
+
+// Personal dashboard data
+app.get('/api/dashboard', async (c) => {
+    const rawAddress = (c.req.query('address') ?? '').trim().toLowerCase()
+    const rawUserId = (c.req.query('userId') ?? '').trim().toLowerCase()
+
+    if (!rawAddress && !rawUserId) {
+        return c.json({ error: 'Missing ?address= or ?userId= parameter' }, 400)
+    }
+
+    // Collect all possible addresses for this user
+    const userAddresses = new Set<string>()
+    if (rawAddress) userAddresses.add(rawAddress)
+    if (rawUserId) {
+        userAddresses.add(rawUserId)
+        const wallet = getUserWallet(rawUserId)
+        if (wallet) userAddresses.add(wallet.toLowerCase())
+    }
+
+    const allAirdrops = listAllAirdrops()
+    const taxHolders = getTaxHolders()
+    const isTaxHolder = [...userAddresses].some(a => taxHolders.some(t => t.toLowerCase() === a))
+
+    const created: any[] = []
+    const joined: any[] = []
+
+    for (const a of allAirdrops) {
+        const isCreator = [...userAddresses].some(addr => a.creatorAddress.toLowerCase() === addr)
+        const isParticipant = a.participants.some(p => [...userAddresses].some(addr => p.toLowerCase() === addr))
+
+        if (isCreator) created.push(airdropToResponse(a))
+        if (isParticipant && !isCreator) joined.push(airdropToResponse(a))
+    }
+
+    // Count stats
+    const createdCount = created.length
+    const joinedCount = joined.length
+    const receivedCount = [...created, ...joined].filter(a => a.status === 'completed').length
+    const cancelledCount = [...created, ...joined].filter(a => a.status === 'cancelled').length
+    const liveCount = [...created, ...joined].filter(a => a.status === 'funded' || a.status === 'distributing').length
+
+    // Earnings by token (from completed airdrops where user is participant)
+    const earningsMap = new Map<string, { symbol: string, decimals: number, total: bigint }>()
+    for (const a of allAirdrops) {
+        if (a.status !== 'completed') continue
+        const isParticipant = a.participants.some(p => [...userAddresses].some(addr => p.toLowerCase() === addr))
+        if (!isParticipant) continue
+        const key = a.currencySymbol || a.currency
+        const existing = earningsMap.get(key) || { symbol: a.currencySymbol || '???', decimals: a.currencyDecimals, total: 0n }
+        existing.total += BigInt(a.amountPerRecipient)
+        earningsMap.set(key, existing)
+    }
+    const earningsByToken = [...earningsMap.values()].map(e => ({
+        symbol: e.symbol, decimals: e.decimals, total: e.total.toString()
+    }))
+
+    // Tax earnings (from completed airdrops where user is in taxHolders)
+    const taxEarningsMap = new Map<string, { symbol: string, decimals: number, total: bigint }>()
+    for (const a of allAirdrops) {
+        if (a.status !== 'completed') continue
+        if (!a.taxHolders || a.taxHolders.length === 0) continue
+        const isTaxRecipient = a.taxHolders.some(t => [...userAddresses].some(addr => t.toLowerCase() === addr))
+        if (!isTaxRecipient) continue
+        const taxPerMember = BigInt(a.taxAmount) / BigInt(a.taxHolders.length)
+        const key = a.currencySymbol || a.currency
+        const existing = taxEarningsMap.get(key) || { symbol: a.currencySymbol || '???', decimals: a.currencyDecimals, total: 0n }
+        existing.total += taxPerMember
+        taxEarningsMap.set(key, existing)
+    }
+    const taxEarningsByToken = [...taxEarningsMap.values()].map(e => ({
+        symbol: e.symbol, decimals: e.decimals, total: e.total.toString()
+    }))
+
+    // Total tax pool (all completed airdrops)
+    const taxPoolMap = new Map<string, { symbol: string, decimals: number, total: bigint }>()
+    for (const a of allAirdrops) {
+        if (a.status !== 'completed') continue
+        if (!a.taxAmount || a.taxAmount === '0') continue
+        const key = a.currencySymbol || a.currency
+        const existing = taxPoolMap.get(key) || { symbol: a.currencySymbol || '???', decimals: a.currencyDecimals, total: 0n }
+        existing.total += BigInt(a.taxAmount)
+        taxPoolMap.set(key, existing)
+    }
+    const totalTaxPoolByToken = [...taxPoolMap.values()].map(e => ({
+        symbol: e.symbol, decimals: e.decimals, total: e.total.toString()
+    }))
+
+    return c.json({
+        history: { created: createdCount, joined: joinedCount, received: receivedCount, cancelled: cancelledCount, live: liveCount },
+        createdAirdrops: created,
+        joinedAirdrops: joined,
+        earningsByToken,
+        taxEarningsByToken,
+        totalTaxPoolByToken,
+        isTaxHolder,
+        taxHolderCount: taxHolders.length,
     })
 })
 

@@ -409,6 +409,13 @@ export function listAirdropHistory(): Airdrop[] {
     return rows.map(rowToAirdrop)
 }
 
+export function listAllAirdrops(): Airdrop[] {
+    const rows = db.query(
+        'SELECT * FROM airdrops ORDER BY created_at DESC',
+    ).all() as AirdropRow[]
+    return rows.map(rowToAirdrop)
+}
+
 export function getAirdropCount(): number {
     const row = db.query('SELECT COUNT(*) as cnt FROM airdrops').get() as { cnt: number }
     return row.cnt

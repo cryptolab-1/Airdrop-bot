@@ -465,6 +465,7 @@
 
             <button id="btnCreateAirdrop">Create an Airdrop</button>
             <button id="btnJoinPublic" class="secondary" style="margin-top:8px;">Join an Airdrop</button>
+            <button id="btnDashboard" class="secondary" style="margin-top:8px;">My Dashboard</button>
             <button id="btnHistory" class="secondary" style="margin-top:8px;">Airdrop History</button>
             <button id="btnLeaderboard" class="secondary" style="margin-top:8px;">Leaderboard</button>
 
@@ -728,6 +729,74 @@
 
                 <div id="depositError" class="error hidden"></div>
                 <div id="depositSuccess" class="success hidden"></div>
+            </div>
+        </div>
+
+        <!-- ===================== DASHBOARD SCREEN ===================== -->
+        <div id="dashboardScreen" class="hidden">
+            <div class="card">
+                <button class="back-btn" id="dashboardBackBtn">&larr; Back</button>
+                <h2>My Dashboard</h2>
+
+                <div id="dashboardLoading" style="text-align:center; padding:20px 0;">
+                    <span class="spinner-sm"></span> Loading your data...
+                </div>
+
+                <div id="dashboardContent" class="hidden">
+                    <!-- Summary Cards (2x2 grid, clickable) -->
+                    <div style="display:grid; grid-template-columns:1fr 1fr; gap:8px; margin-bottom:16px;">
+                        <div class="dash-card" id="dashCardCreated" style="cursor:pointer; border:1px solid rgba(139,92,246,0.2); border-radius:10px; padding:14px; text-align:center; background:rgba(139,92,246,0.06); transition:background 0.15s;">
+                            <div style="font-size:24px; font-weight:700; color:#c4b5fd;" id="dashCreatedCount">0</div>
+                            <div style="font-size:12px; opacity:0.6;">Created</div>
+                            <div id="dashCreatedLive" class="hidden" style="font-size:10px; color:#4ade80; margin-top:2px;">&#9679; live</div>
+                        </div>
+                        <div class="dash-card" id="dashCardJoined" style="cursor:pointer; border:1px solid rgba(139,92,246,0.2); border-radius:10px; padding:14px; text-align:center; background:rgba(139,92,246,0.06); transition:background 0.15s;">
+                            <div style="font-size:24px; font-weight:700; color:#c4b5fd;" id="dashJoinedCount">0</div>
+                            <div style="font-size:12px; opacity:0.6;">Joined</div>
+                            <div id="dashJoinedLive" class="hidden" style="font-size:10px; color:#4ade80; margin-top:2px;">&#9679; live</div>
+                        </div>
+                        <div class="dash-card" id="dashCardReceived" style="cursor:pointer; border:1px solid rgba(96,211,148,0.2); border-radius:10px; padding:14px; text-align:center; background:rgba(96,211,148,0.06); transition:background 0.15s;">
+                            <div style="font-size:24px; font-weight:700; color:#4ade80;" id="dashReceivedCount">0</div>
+                            <div style="font-size:12px; opacity:0.6;">Received</div>
+                        </div>
+                        <div class="dash-card" id="dashCardCancelled" style="border:1px solid rgba(248,113,113,0.2); border-radius:10px; padding:14px; text-align:center; background:rgba(248,113,113,0.06);">
+                            <div style="font-size:24px; font-weight:700; color:#f87171;" id="dashCancelledCount">0</div>
+                            <div style="font-size:12px; opacity:0.6;">Cancelled</div>
+                        </div>
+                    </div>
+
+                    <!-- My Earnings -->
+                    <div style="border:1px solid rgba(139,92,246,0.2); border-radius:10px; padding:14px; margin-bottom:12px; background:rgba(139,92,246,0.04);">
+                        <h3 style="margin:0 0 10px; font-size:14px; color:#c4b5fd;">My Earnings</h3>
+                        <div id="dashEarnings" style="font-size:13px;">
+                            <span style="opacity:0.4;">No earnings yet</span>
+                        </div>
+                    </div>
+
+                    <!-- Tax Earnings (Crypto Lab member) -->
+                    <div id="dashTaxSection" class="hidden" style="border:1px solid rgba(234,179,8,0.3); border-radius:10px; padding:14px; margin-bottom:12px; background:rgba(234,179,8,0.06);">
+                        <div style="display:flex; align-items:center; gap:8px; margin-bottom:10px;">
+                            <h3 style="margin:0; font-size:14px; color:#fbbf24;">My Tax Earnings</h3>
+                            <span style="font-size:10px; background:rgba(234,179,8,0.2); color:#fbbf24; padding:2px 8px; border-radius:20px; font-weight:600;">Crypto Lab Member</span>
+                        </div>
+                        <div id="dashTaxEarnings" style="font-size:13px;">-</div>
+                    </div>
+
+                    <!-- Total Tax Pool -->
+                    <div style="border:1px solid rgba(234,179,8,0.15); border-radius:10px; padding:14px; background:rgba(234,179,8,0.03);">
+                        <h3 style="margin:0 0 10px; font-size:14px; color:#fbbf24; opacity:0.8;">Crypto Lab Tax Pool</h3>
+                        <div id="dashTaxPool" style="font-size:13px; opacity:0.7;">-</div>
+                        <div id="dashTaxMembers" style="font-size:11px; opacity:0.4; margin-top:4px;">-</div>
+                    </div>
+                </div>
+
+                <!-- Filtered airdrop list (shown when clicking a summary card) -->
+                <div id="dashFilteredSection" class="hidden">
+                    <button class="back-btn" id="dashFilteredBackBtn">&larr; Back to Dashboard</button>
+                    <h3 id="dashFilteredTitle" style="margin:8px 0 12px; font-size:15px; color:#c4b5fd;">-</h3>
+                    <div id="dashFilteredList"></div>
+                    <div id="dashFilteredEmpty" class="empty-state hidden">No airdrops in this category.</div>
+                </div>
             </div>
         </div>
 
@@ -1102,7 +1171,7 @@
         // ==================================================================
         // Screen navigation
         // ==================================================================
-        const screens = ['homeScreen', 'createScreen', 'depositScreen', 'publicScreen', 'statusScreen', 'leaderboardScreen', 'historyScreen', 'adminScreen', 'recoverScreen']
+        const screens = ['homeScreen', 'createScreen', 'depositScreen', 'dashboardScreen', 'publicScreen', 'statusScreen', 'leaderboardScreen', 'historyScreen', 'adminScreen', 'recoverScreen']
         const screenHistory = ['homeScreen']
 
         function showScreen(name, skipHistory) {
@@ -1396,6 +1465,11 @@
         document.getElementById('btnCreateAirdrop').addEventListener('click', () => {
             showScreen('createScreen')
             initCreateScreen()
+        })
+
+        document.getElementById('btnDashboard').addEventListener('click', () => {
+            showScreen('dashboardScreen')
+            loadDashboard()
         })
 
         document.getElementById('btnJoinPublic').addEventListener('click', () => {
@@ -1979,6 +2053,176 @@
                 btn.disabled = false
                 btn.textContent = 'Confirm Deposit'
             }
+        })
+
+        // ==================================================================
+        // DASHBOARD SCREEN
+        // ==================================================================
+        let dashboardData = null
+
+        document.getElementById('dashboardBackBtn').addEventListener('click', () => goBack())
+
+        async function loadDashboard() {
+            const loadingEl = document.getElementById('dashboardLoading')
+            const contentEl = document.getElementById('dashboardContent')
+            const filteredEl = document.getElementById('dashFilteredSection')
+            loadingEl.classList.remove('hidden')
+            contentEl.classList.add('hidden')
+            filteredEl.classList.add('hidden')
+
+            try {
+                const userId = context?.towns?.user?.userId || ''
+                const userAddr = resolvedUserWallet || context?.towns?.user?.address || ''
+                const params = new URLSearchParams()
+                if (userAddr) params.set('address', userAddr)
+                if (userId) params.set('userId', userId)
+
+                const res = await fetch(`/api/dashboard?${params}`)
+                const data = await res.json()
+                if (!res.ok) throw new Error(data.error || 'Failed to load dashboard')
+                dashboardData = data
+                renderDashboard(data)
+            } catch (err) {
+                loadingEl.classList.add('hidden')
+                contentEl.innerHTML = `<div class="error">${err.message}</div>`
+                contentEl.classList.remove('hidden')
+            }
+        }
+
+        function renderDashboard(data) {
+            document.getElementById('dashboardLoading').classList.add('hidden')
+            document.getElementById('dashboardContent').classList.remove('hidden')
+
+            // Summary cards
+            document.getElementById('dashCreatedCount').textContent = data.history.created
+            document.getElementById('dashJoinedCount').textContent = data.history.joined
+            document.getElementById('dashReceivedCount').textContent = data.history.received
+            document.getElementById('dashCancelledCount').textContent = data.history.cancelled
+
+            // Live indicators
+            const createdLive = data.createdAirdrops.filter(a => a.status === 'funded' || a.status === 'distributing').length
+            const joinedLive = data.joinedAirdrops.filter(a => a.status === 'funded' || a.status === 'distributing').length
+            if (createdLive > 0) {
+                document.getElementById('dashCreatedLive').textContent = '\u25CF ' + createdLive + ' live'
+                document.getElementById('dashCreatedLive').classList.remove('hidden')
+            } else {
+                document.getElementById('dashCreatedLive').classList.add('hidden')
+            }
+            if (joinedLive > 0) {
+                document.getElementById('dashJoinedLive').textContent = '\u25CF ' + joinedLive + ' live'
+                document.getElementById('dashJoinedLive').classList.remove('hidden')
+            } else {
+                document.getElementById('dashJoinedLive').classList.add('hidden')
+            }
+
+            // Earnings
+            const earningsEl = document.getElementById('dashEarnings')
+            if (data.earningsByToken.length > 0) {
+                earningsEl.innerHTML = data.earningsByToken.map(e =>
+                    `<div style="display:flex; justify-content:space-between; padding:4px 0;">
+                        <span style="color:#c4b5fd; font-weight:600;">$${escapeHtml(e.symbol)}</span>
+                        <span style="font-weight:700;">${formatTokens(e.total, e.decimals)}</span>
+                    </div>`
+                ).join('')
+            } else {
+                earningsEl.innerHTML = '<span style="opacity:0.4;">No earnings yet</span>'
+            }
+
+            // Tax earnings
+            const taxSection = document.getElementById('dashTaxSection')
+            if (data.isTaxHolder && data.taxEarningsByToken.length > 0) {
+                taxSection.classList.remove('hidden')
+                document.getElementById('dashTaxEarnings').innerHTML = data.taxEarningsByToken.map(e =>
+                    `<div style="display:flex; justify-content:space-between; padding:4px 0;">
+                        <span style="color:#fbbf24; font-weight:600;">$${escapeHtml(e.symbol)}</span>
+                        <span style="font-weight:700;">${formatTokens(e.total, e.decimals)}</span>
+                    </div>`
+                ).join('')
+            } else if (data.isTaxHolder) {
+                taxSection.classList.remove('hidden')
+                document.getElementById('dashTaxEarnings').innerHTML = '<span style="opacity:0.4;">No tax earnings yet</span>'
+            } else {
+                taxSection.classList.add('hidden')
+            }
+
+            // Tax pool
+            if (data.totalTaxPoolByToken.length > 0) {
+                document.getElementById('dashTaxPool').innerHTML = data.totalTaxPoolByToken.map(e =>
+                    `<div style="display:flex; justify-content:space-between; padding:4px 0;">
+                        <span style="color:#fbbf24;">$${escapeHtml(e.symbol)}</span>
+                        <span>${formatTokens(e.total, e.decimals)}</span>
+                    </div>`
+                ).join('')
+            } else {
+                document.getElementById('dashTaxPool').innerHTML = '<span style="opacity:0.4;">No distributions yet</span>'
+            }
+            document.getElementById('dashTaxMembers').textContent = `${data.taxHolderCount} Crypto Lab members`
+        }
+
+        // Clickable summary cards
+        document.getElementById('dashCardCreated').addEventListener('click', () => {
+            if (!dashboardData) return
+            showFilteredList('Airdrops Created', dashboardData.createdAirdrops)
+        })
+        document.getElementById('dashCardJoined').addEventListener('click', () => {
+            if (!dashboardData) return
+            showFilteredList('Airdrops Joined', dashboardData.joinedAirdrops)
+        })
+        document.getElementById('dashCardReceived').addEventListener('click', () => {
+            if (!dashboardData) return
+            const received = [...dashboardData.createdAirdrops, ...dashboardData.joinedAirdrops].filter(a => a.status === 'completed')
+            showFilteredList('Airdrops Received', received)
+        })
+
+        function showFilteredList(title, airdrops) {
+            document.getElementById('dashboardContent').classList.add('hidden')
+            const section = document.getElementById('dashFilteredSection')
+            section.classList.remove('hidden')
+            document.getElementById('dashFilteredTitle').textContent = title + ' (' + airdrops.length + ')'
+
+            const listEl = document.getElementById('dashFilteredList')
+            const emptyEl = document.getElementById('dashFilteredEmpty')
+
+            if (airdrops.length === 0) {
+                listEl.innerHTML = ''
+                emptyEl.classList.remove('hidden')
+                return
+            }
+
+            emptyEl.classList.add('hidden')
+            listEl.innerHTML = airdrops.map(drop => {
+                const dec = drop.currencyDecimals ?? 18
+                const sym = drop.currencySymbol ? '$' + drop.currencySymbol : 'tokens'
+                const titleHtml = drop.title
+                    ? `<div style="font-weight:700; font-size:14px; color:#e0d4f5; margin-bottom:2px;">${escapeHtml(drop.title)}</div>`
+                    : ''
+                const isLive = drop.status === 'funded' || drop.status === 'distributing'
+                const liveDot = isLive ? '<span style="color:#4ade80; font-size:10px; margin-left:6px;">&#9679; live</span>' : ''
+                return `<div class="airdrop-card" style="cursor:pointer;" onclick="dashViewDrop('${drop.id}')">
+                    ${titleHtml}
+                    <div class="airdrop-card-header">
+                        <span class="airdrop-card-title">${formatTokens(drop.totalAmount, dec)} ${sym}</span>
+                        <span class="status-badge status-${drop.status}">${drop.status.toUpperCase()}${liveDot}</span>
+                    </div>
+                    <div class="airdrop-card-detail">${drop.recipientCount} participant${drop.recipientCount !== 1 ? 's' : ''}</div>
+                    <div class="airdrop-card-detail" style="opacity:0.4;">${new Date(drop.createdAt).toLocaleDateString()}</div>
+                </div>`
+            }).join('')
+        }
+
+        window.dashViewDrop = async function(id) {
+            try {
+                const drop = await apiGetAirdrop(id)
+                currentAirdrop = drop
+                openStatusScreen(drop)
+            } catch (err) {
+                console.error('Failed to view drop:', err)
+            }
+        }
+
+        document.getElementById('dashFilteredBackBtn').addEventListener('click', () => {
+            document.getElementById('dashFilteredSection').classList.add('hidden')
+            document.getElementById('dashboardContent').classList.remove('hidden')
         })
 
         // ==================================================================
