@@ -1007,21 +1007,40 @@ app.get('/api/debug/space-holders', async (c) => {
                 .split(',').map(s => s.trim()).filter(Boolean)
 
             console.log(`[Debug] Fetching NFT holders from chain...`)
-            const holders = await getMembershipNftHolderAddresses(
+            const rawHolders = await getMembershipNftHolderAddresses(
                 bot as AnyBot,
                 rawNft as Address,
             )
-            console.log(`[Debug] Got ${holders.length} raw holders, resolving smart accounts...`)
+            const rawList = rawHolders.map((a) => (a as string).toLowerCase())
+            console.log(`[Debug] Got ${rawList.length} raw holders: ${rawList.slice(0, 5).join(', ')}...`)
 
+            console.log(`[Debug] Resolving smart accounts...`)
             const unique = (
                 await getUniqueRecipientAddresses(
                     bot as AnyBot,
-                    holders.map((a) => a as string),
+                    rawHolders.map((a) => a as string),
                     { excludeAddresses: exAddr.length > 0 ? exAddr : undefined, onlyResolved: false },
                 )
             ).map((a) => a as string)
             saveSpaceHolders(nftAddress, unique)
-            console.log(`[Debug] Force-refreshed: ${holders.length} raw → ${unique.length} resolved holders for ${nftAddress}`)
+            console.log(`[Debug] Force-refreshed: ${rawList.length} raw → ${unique.length} resolved holders for ${nftAddress}`)
+
+            // Return detailed refresh result with raw vs resolved comparison
+            const resolvedSet = new Set(unique.map(a => a.toLowerCase()))
+            const dropped = rawList.filter(a => !resolvedSet.has(a))
+            return c.json({
+                refreshed: true,
+                rawHolderCount: rawList.length,
+                rawHolders: rawList,
+                resolvedHolderCount: unique.length,
+                resolvedHolders: unique.map(a => a.toLowerCase()),
+                droppedDuringResolution: dropped,
+                droppedCount: dropped.length,
+                note: 'Raw = NFT holder userIds from chain. Resolved = smart account addresses stored in cache. Dropped = raw holders not in resolved list (resolution failed or duplicate).',
+                checkAddress: checkAddress || null,
+                checkInRaw: checkAddress ? rawList.includes(checkAddress) : null,
+                checkInResolved: checkAddress ? resolvedSet.has(checkAddress) : null,
+            })
         } catch (err) {
             console.error(`[Debug] Force refresh failed:`, err)
             return c.json({ error: 'Force refresh failed', details: String(err) }, 500)
