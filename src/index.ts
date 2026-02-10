@@ -41,6 +41,7 @@ import {
     getTaxHoldersLastUpdated,
     saveSpaceHolders,
     getSpaceHolders,
+    getSpaceHoldersLastUpdated,
     isSpaceHoldersStale,
     saveTokenInfo,
     getTokenInfo,
@@ -984,6 +985,57 @@ app.get('/api/token-info', async (c) => {
         console.error('[TokenInfo] Error:', err)
         return c.json({ error: 'Failed to read token contract' }, 500)
     }
+})
+
+// Debug: inspect space holders cache & exclusions
+app.get('/api/debug/space-holders', (c) => {
+    const nftAddress = (c.req.query('nft') ?? '').trim().toLowerCase()
+    const checkAddress = (c.req.query('check') ?? '').trim().toLowerCase()
+
+    if (!nftAddress) {
+        return c.json({ error: 'Missing ?nft= parameter (space NFT address)' }, 400)
+    }
+
+    const holders = getSpaceHolders(nftAddress)
+    const lastUpdated = getSpaceHoldersLastUpdated(nftAddress)
+    const isStale = isSpaceHoldersStale(nftAddress)
+    const excludeAddresses = (process.env.AIRDROP_EXCLUDE_ADDRESSES ?? '')
+        .split(',').map(s => s.trim().toLowerCase()).filter(Boolean)
+    const botApp = (bot.appAddress ?? '').toLowerCase()
+    const botId = (bot.viem.account.address ?? '').toLowerCase()
+
+    const result: any = {
+        nftAddress,
+        cachedHolderCount: holders?.length ?? 0,
+        lastUpdated: lastUpdated ? new Date(lastUpdated).toISOString() : null,
+        isStale,
+        excludeAddresses,
+        botAppAddress: botApp,
+        botIdAddress: botId,
+        holders: holders?.map(h => h.toLowerCase()) ?? [],
+    }
+
+    if (checkAddress) {
+        const inCache = holders?.some(h => h.toLowerCase() === checkAddress) ?? false
+        const isExcluded = excludeAddresses.includes(checkAddress)
+        const isBotApp = checkAddress === botApp
+        const isBotId = checkAddress === botId
+        result.check = {
+            address: checkAddress,
+            inHoldersCache: inCache,
+            isExcluded,
+            isBotApp,
+            isBotId,
+            wouldBeIncluded: inCache && !isExcluded && !isBotApp && !isBotId,
+            reason: !inCache ? 'NOT in holders cache (not an NFT holder or cache stale)'
+                : isExcluded ? 'In AIRDROP_EXCLUDE_ADDRESSES list'
+                : isBotApp ? 'Filtered as bot app address'
+                : isBotId ? 'Filtered as bot signer address'
+                : 'Would be included in airdrop'
+        }
+    }
+
+    return c.json(result)
 })
 
 // Public config (tax rate, etc.)
