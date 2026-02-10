@@ -2815,17 +2815,24 @@
             }
         })
 
-        // Space Holders - Force Refresh
+        // Space Holders - Force Refresh (double-click to confirm)
         document.getElementById('adminRefreshBtn').addEventListener('click', async () => {
             const nft = document.getElementById('adminNftInput').value.trim()
             const check = document.getElementById('adminCheckInput').value.trim()
-            if (!nft) return alert('Enter a Space NFT address')
-
-            if (!confirm('Force refresh will re-fetch all holders from chain. Continue?')) return
+            if (!nft) return
 
             const btn = document.getElementById('adminRefreshBtn')
+            if (!btn.dataset.confirmed) {
+                btn.dataset.confirmed = '1'
+                btn.textContent = 'Confirm Refresh?'
+                btn.style.background = '#dc2626'
+                setTimeout(() => { delete btn.dataset.confirmed; btn.textContent = 'Force Refresh'; btn.style.background = '' }, 3000)
+                return
+            }
+            delete btn.dataset.confirmed
             btn.disabled = true
             btn.textContent = 'Refreshing...'
+            btn.style.background = ''
             const resultEl = document.getElementById('adminHoldersResult')
 
             try {
@@ -2844,16 +2851,23 @@
             }
         })
 
-        // Space Holders - Clear Cache
+        // Space Holders - Clear Cache (double-click to confirm)
         document.getElementById('adminClearCacheBtn').addEventListener('click', async () => {
             const nft = document.getElementById('adminNftInput').value.trim()
-            if (!nft) return alert('Enter a Space NFT address')
-
-            if (!confirm('Clear the holders cache? It will rebuild on next airdrop creation.')) return
+            if (!nft) return
 
             const btn = document.getElementById('adminClearCacheBtn')
+            if (!btn.dataset.confirmed) {
+                btn.dataset.confirmed = '1'
+                btn.textContent = 'Confirm Clear?'
+                btn.style.background = '#dc2626'
+                setTimeout(() => { delete btn.dataset.confirmed; btn.textContent = 'Clear Cache'; btn.style.background = '' }, 3000)
+                return
+            }
+            delete btn.dataset.confirmed
             btn.disabled = true
             btn.textContent = 'Clearing...'
+            btn.style.background = ''
             const resultEl = document.getElementById('adminHoldersResult')
 
             try {
