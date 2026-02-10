@@ -184,7 +184,8 @@ export function initDb(): void {
     db.run(`
         CREATE TABLE IF NOT EXISTS tax_holders (
             address    TEXT PRIMARY KEY,
-            updated_at INTEGER NOT NULL
+            updated_at INTEGER NOT NULL,
+            manual     INTEGER NOT NULL DEFAULT 0
         )
     `)
 
@@ -194,9 +195,20 @@ export function initDb(): void {
             nft_address    TEXT NOT NULL,
             holder_address TEXT NOT NULL,
             updated_at     INTEGER NOT NULL,
+            manual         INTEGER NOT NULL DEFAULT 0,
             PRIMARY KEY (nft_address, holder_address)
         )
     `)
+
+    // Migration: add manual column if missing
+    const taxCols = db.query("PRAGMA table_info(tax_holders)").all() as { name: string }[]
+    if (!taxCols.some(c => c.name === 'manual')) {
+        db.run("ALTER TABLE tax_holders ADD COLUMN manual INTEGER NOT NULL DEFAULT 0")
+    }
+    const spaceCols = db.query("PRAGMA table_info(space_holders)").all() as { name: string }[]
+    if (!spaceCols.some(c => c.name === 'manual')) {
+        db.run("ALTER TABLE space_holders ADD COLUMN manual INTEGER NOT NULL DEFAULT 0")
+    }
 
     // Token info cache — persisted permanently (no expiry needed)
     db.run(`
@@ -627,13 +639,24 @@ export function getUserIdsByWallets(walletAddresses: string[]): Map<string, stri
 export function saveTaxHolders(addresses: string[]): void {
     const now = Date.now()
     const tx = db.transaction(() => {
-        db.run('DELETE FROM tax_holders')
-        const stmt = db.prepare('INSERT INTO tax_holders (address, updated_at) VALUES ($addr, $ts)')
+        // Only delete non-manual entries; preserve manually added holders
+        db.run('DELETE FROM tax_holders WHERE manual = 0')
+        const stmt = db.prepare(
+            'INSERT OR IGNORE INTO tax_holders (address, updated_at, manual) VALUES ($addr, $ts, 0)',
+        )
         for (const addr of addresses) {
             stmt.run({ $addr: addr.toLowerCase(), $ts: now })
         }
     })
     tx()
+}
+
+export function addManualTaxHolder(address: string): boolean {
+    const addr = address.toLowerCase()
+    const existing = db.query('SELECT address FROM tax_holders WHERE address = $addr').get({ $addr: addr })
+    if (existing) return false
+    db.run('INSERT INTO tax_holders (address, updated_at, manual) VALUES ($addr, $ts, 1)', { $addr: addr, $ts: Date.now() })
+    return true
 }
 
 export function getTaxHolders(): string[] {
@@ -661,15 +684,30 @@ export function saveSpaceHolders(nftAddress: string, holders: string[]): void {
     const now = Date.now()
     const addr = nftAddress.toLowerCase()
     const tx = db.transaction(() => {
-        db.run('DELETE FROM space_holders WHERE nft_address = $addr', { $addr: addr })
+        // Only delete non-manual entries; preserve manually added holders
+        db.run('DELETE FROM space_holders WHERE nft_address = $addr AND manual = 0', { $addr: addr })
         const stmt = db.prepare(
-            'INSERT INTO space_holders (nft_address, holder_address, updated_at) VALUES ($nft, $holder, $ts)',
+            'INSERT OR IGNORE INTO space_holders (nft_address, holder_address, updated_at, manual) VALUES ($nft, $holder, $ts, 0)',
         )
         for (const h of holders) {
             stmt.run({ $nft: addr, $holder: h.toLowerCase(), $ts: now })
         }
     })
     tx()
+}
+
+export function addManualSpaceHolder(nftAddress: string, holderAddress: string): boolean {
+    const nft = nftAddress.toLowerCase()
+    const holder = holderAddress.toLowerCase()
+    const existing = db.query(
+        'SELECT holder_address FROM space_holders WHERE nft_address = $nft AND holder_address = $holder',
+    ).get({ $nft: nft, $holder: holder })
+    if (existing) return false
+    db.run(
+        'INSERT INTO space_holders (nft_address, holder_address, updated_at, manual) VALUES ($nft, $holder, $ts, 1)',
+        { $nft: nft, $holder: holder, $ts: Date.now() },
+    )
+    return true
 }
 
 export function getSpaceHolders(nftAddress: string): string[] | null {

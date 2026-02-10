@@ -1024,6 +1024,19 @@
                     </div>
                 </div>
 
+                <!-- Tax Holders (Crypto Lab Members) -->
+                <div style="margin-top:16px; border:1px solid rgba(234,179,8,0.3); border-radius:12px; padding:16px; background:rgba(234,179,8,0.04);">
+                    <h3 style="margin:0 0 12px; font-size:15px; color:#fbbf24;">Tax Holders (Crypto Lab Members)</h3>
+                    <p style="font-size:12px; opacity:0.6; margin:0 0 12px;">Manual additions survive the 24h auto-refresh.</p>
+
+                    <div class="form-group" style="margin-bottom:8px;">
+                        <label>Smart Account Address</label>
+                        <input type="text" id="adminAddTaxHolderInput" placeholder="0x... smart account to add as tax holder" />
+                    </div>
+                    <button id="adminAddTaxHolderBtn" class="sm secondary" style="width:100%;">Add Tax Holder</button>
+                    <div id="adminAddTaxHolderResult" class="hidden" style="margin-top:8px;"></div>
+                </div>
+
                 <!-- Wallet Resolver -->
                 <div style="margin-top:16px; border:1px solid rgba(139,92,246,0.2); border-radius:12px; padding:16px; background:rgba(139,92,246,0.04);">
                     <h3 style="margin:0 0 12px; font-size:15px; color:#c4b5fd;">Wallet Resolver</h3>
@@ -3185,6 +3198,35 @@
             } finally {
                 btn.disabled = false
                 btn.textContent = 'Add to Cache'
+            }
+        })
+
+        // Add Tax Holder manually
+        document.getElementById('adminAddTaxHolderBtn').addEventListener('click', async () => {
+            const holder = document.getElementById('adminAddTaxHolderInput').value.trim()
+            if (!holder) return alert('Enter a smart account address')
+
+            const btn = document.getElementById('adminAddTaxHolderBtn')
+            btn.disabled = true
+            btn.textContent = 'Adding...'
+            const resultEl = document.getElementById('adminAddTaxHolderResult')
+
+            try {
+                const res = await fetch('/api/debug/add-tax-holder', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ holder })
+                })
+                const data = await res.json()
+                if (!res.ok) throw new Error(data.error || 'Failed to add')
+                resultEl.innerHTML = `<div class="success">${data.message} (${data.holderCount} total)</div>`
+                resultEl.classList.remove('hidden')
+            } catch (err) {
+                resultEl.innerHTML = `<div class="error">${err.message}</div>`
+                resultEl.classList.remove('hidden')
+            } finally {
+                btn.disabled = false
+                btn.textContent = 'Add Tax Holder'
             }
         })
 

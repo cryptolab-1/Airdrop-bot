@@ -56,6 +56,8 @@ import {
     getUserIdsByWallets,
     deleteAirdrop,
     listAllAirdrops,
+    addManualSpaceHolder,
+    addManualTaxHolder,
     resetLeaderboard,
     deleteHistoryAirdrops,
 } from './db'
@@ -1121,7 +1123,7 @@ app.post('/api/debug/clear-cache', (c) => {
     return c.json({ ok: true, deleted, message: `Cleared ${deleted} cached entries. Cache will rebuild on next airdrop creation or holder fetch.` })
 })
 
-// Debug: manually add a holder to the space cache
+// Debug: manually add a holder to the space cache (survives 24h refresh)
 app.post('/api/debug/add-holder', async (c) => {
     try {
         const body = await c.req.json()
@@ -1135,21 +1137,42 @@ app.post('/api/debug/add-holder', async (c) => {
             return c.json({ error: 'Missing or invalid holder address' }, 400)
         }
 
-        // Check if already in cache
-        const existing = getSpaceHolders(nftAddress)
-        if (existing && existing.some(h => h.toLowerCase() === holderAddress)) {
-            return c.json({ ok: true, message: 'Address already in cache', holderCount: existing.length })
+        const added = addManualSpaceHolder(nftAddress, holderAddress)
+        const holders = getSpaceHolders(nftAddress)
+        const count = holders?.length ?? 0
+
+        if (added) {
+            console.log(`[Debug] Manually added holder ${holderAddress} to ${nftAddress} (now ${count}, manual=1)`)
+            return c.json({ ok: true, message: `Added ${holderAddress} (permanent, survives refresh)`, holderCount: count })
+        } else {
+            return c.json({ ok: true, message: 'Address already in cache', holderCount: count })
         }
-
-        // Add to cache by re-saving the full list with the new holder
-        const holders = existing || []
-        holders.push(holderAddress)
-        saveSpaceHolders(nftAddress, holders)
-        console.log(`[Debug] Manually added holder ${holderAddress} to ${nftAddress} (now ${holders.length} holders)`)
-
-        return c.json({ ok: true, message: `Added ${holderAddress} to cache`, holderCount: holders.length })
     } catch (err) {
         return c.json({ error: 'Failed to add holder', details: String(err) }, 500)
+    }
+})
+
+// Debug: manually add a tax holder (survives 24h refresh)
+app.post('/api/debug/add-tax-holder', async (c) => {
+    try {
+        const body = await c.req.json()
+        const holderAddress = (body.holder ?? '').trim().toLowerCase()
+
+        if (!holderAddress || !isEthAddress(holderAddress)) {
+            return c.json({ error: 'Missing or invalid holder address' }, 400)
+        }
+
+        const added = addManualTaxHolder(holderAddress)
+        const count = getTaxHolderCount()
+
+        if (added) {
+            console.log(`[Debug] Manually added tax holder ${holderAddress} (now ${count}, manual=1)`)
+            return c.json({ ok: true, message: `Added ${holderAddress} as tax holder (permanent, survives refresh)`, holderCount: count })
+        } else {
+            return c.json({ ok: true, message: 'Address already a tax holder', holderCount: count })
+        }
+    } catch (err) {
+        return c.json({ error: 'Failed to add tax holder', details: String(err) }, 500)
     }
 })
 
