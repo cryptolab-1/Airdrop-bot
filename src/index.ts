@@ -1241,7 +1241,8 @@ app.get('/api/dashboard', async (c) => {
 
     const allAirdrops = listAllAirdrops()
     const taxHolders = getTaxHolders()
-    const isTaxHolder = [...userAddresses].some(a => taxHolders.some(t => t.toLowerCase() === a))
+    const taxHoldersSet = new Set(taxHolders.map(t => t.toLowerCase()))
+    const isTaxHolder = [...userAddresses].some(a => taxHoldersSet.has(a))
 
     const created: any[] = []
     const joined: any[] = []
@@ -1307,6 +1308,24 @@ app.get('/api/dashboard', async (c) => {
         symbol: e.symbol, decimals: e.decimals, total: e.total.toString()
     }))
 
+    // Total airdrop earnings received by Crypto Lab members (from all completed airdrops)
+    const membersEarningsMap = new Map<string, { symbol: string, decimals: number, total: bigint }>()
+    for (const a of allAirdrops) {
+        if (a.status !== 'completed') continue
+        if (!a.amountPerRecipient || a.amountPerRecipient === '0') continue
+        const memberRecipients = a.participants.filter(p =>
+            taxHoldersSet.has(p.toLowerCase())
+        ).length
+        if (memberRecipients === 0) continue
+        const key = a.currencySymbol || a.currency
+        const existing = membersEarningsMap.get(key) || { symbol: a.currencySymbol || '???', decimals: a.currencyDecimals, total: 0n }
+        existing.total += BigInt(a.amountPerRecipient) * BigInt(memberRecipients)
+        membersEarningsMap.set(key, existing)
+    }
+    const membersAirdropEarningsByToken = [...membersEarningsMap.values()].map(e => ({
+        symbol: e.symbol, decimals: e.decimals, total: e.total.toString()
+    }))
+
     return c.json({
         history: { created: createdCount, joined: joinedCount, received: receivedCount, cancelled: cancelledCount, live: liveCount },
         createdAirdrops: created,
@@ -1314,6 +1333,7 @@ app.get('/api/dashboard', async (c) => {
         earningsByToken,
         taxEarningsByToken,
         totalTaxPoolByToken,
+        membersAirdropEarningsByToken,
         isTaxHolder,
         taxHolderCount: taxHolders.length,
     })

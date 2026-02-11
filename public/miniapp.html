@@ -782,11 +782,17 @@
                         <div id="dashTaxEarnings" style="font-size:13px;">-</div>
                     </div>
 
-                    <!-- Total Tax Pool -->
+                    <!-- Total Tax Distributed -->
                     <div style="border:1px solid rgba(234,179,8,0.15); border-radius:10px; padding:14px; background:rgba(234,179,8,0.03);">
-                        <h3 style="margin:0 0 10px; font-size:14px; color:#fbbf24; opacity:0.8;">Crypto Lab Tax Pool</h3>
+                        <h3 style="margin:0 0 10px; font-size:14px; color:#fbbf24; opacity:0.8;">Total Tax Distributed to Crypto Lab's Members</h3>
                         <div id="dashTaxPool" style="font-size:13px; opacity:0.7;">-</div>
                         <div id="dashTaxMembers" style="font-size:11px; opacity:0.4; margin-top:4px;">-</div>
+                    </div>
+
+                    <!-- Total Airdrops Distributed to Members -->
+                    <div style="border:1px solid rgba(234,179,8,0.15); border-radius:10px; padding:14px; margin-top:12px; background:rgba(234,179,8,0.03);">
+                        <h3 style="margin:0 0 10px; font-size:14px; color:#fbbf24; opacity:0.8;">Total Airdrops Distributed to Crypto Lab's Members</h3>
+                        <div id="dashMembersAirdropEarnings" style="font-size:13px; opacity:0.7;">-</div>
                     </div>
                 </div>
 
@@ -2170,6 +2176,18 @@
                 document.getElementById('dashTaxPool').innerHTML = '<span style="opacity:0.4;">No distributions yet</span>'
             }
             document.getElementById('dashTaxMembers').textContent = `${data.taxHolderCount} Crypto Lab members`
+
+            // Members airdrop earnings
+            if (data.membersAirdropEarningsByToken && data.membersAirdropEarningsByToken.length > 0) {
+                document.getElementById('dashMembersAirdropEarnings').innerHTML = data.membersAirdropEarningsByToken.map(e =>
+                    `<div style="display:flex; justify-content:space-between; padding:4px 0;">
+                        <span style="color:#fbbf24;">$${escapeHtml(e.symbol)}</span>
+                        <span>${formatTokens(e.total, e.decimals)}</span>
+                    </div>`
+                ).join('')
+            } else {
+                document.getElementById('dashMembersAirdropEarnings').innerHTML = '<span style="opacity:0.4;">No distributions yet</span>'
+            }
         }
 
         // Clickable summary cards
