@@ -3286,7 +3286,66 @@
                 const res = await fetch(`/api/airdrop/${encodeURIComponent(airdropId)}`)
                 const data = await res.json()
                 if (!res.ok) throw new Error(data.error || 'Airdrop not found')
+
+                // Build extra info for joinable space airdrops
+                let extraHtml = ''
+                if (data.missingHolders && data.missingHolders.length > 0) {
+                    extraHtml += `<div style="margin-top:12px; border:1px solid rgba(234,179,8,0.3); border-radius:10px; padding:12px; background:rgba(234,179,8,0.06);">`
+                    extraHtml += `<div style="font-size:13px; font-weight:700; color:#fbbf24; margin-bottom:8px;">Eligible Holders Not Joined (${data.missingHolders.length} / ${data.totalEligible})</div>`
+                    extraHtml += `<div style="max-height:200px; overflow-y:auto;">`
+                    data.missingHolders.forEach(h => {
+                        const label = h.name
+                            ? `<strong>${escapeHtml(h.name)}</strong> <span style="opacity:0.5; font-size:11px;">${shortAddr(h.address)}</span>`
+                            : `<span style="font-family:monospace; font-size:11px;">${shortAddr(h.address)}</span>`
+                        extraHtml += `<div style="padding:3px 0; border-bottom:1px solid rgba(255,255,255,0.05);">${label}</div>`
+                    })
+                    extraHtml += `</div>`
+                    extraHtml += `<button id="adminSendReminderBtn" class="sm" style="width:100%; margin-top:10px; background:rgba(234,179,8,0.2); color:#fbbf24; border:1px solid rgba(234,179,8,0.4);" data-airdrop-id="${escapeHtml(airdropId)}">Send Reminder in Chat</button>`
+                    extraHtml += `<div id="adminReminderResult" style="margin-top:6px; font-size:12px;"></div>`
+                    extraHtml += `</div>`
+                } else if (data.isSpaceJoinMode && data.totalEligible) {
+                    extraHtml += `<div style="margin-top:8px; font-size:12px; color:#fbbf24; opacity:0.7;">All ${data.totalEligible} eligible holders have joined.</div>`
+                }
+
                 renderDebugResult(data, resultEl)
+                if (extraHtml) resultEl.innerHTML += extraHtml
+
+                // Bind reminder button if present
+                const reminderBtn = document.getElementById('adminSendReminderBtn')
+                if (reminderBtn) {
+                    reminderBtn.addEventListener('click', async () => {
+                        const aid = reminderBtn.dataset.airdropId
+                        if (!reminderBtn.dataset.confirmed) {
+                            reminderBtn.dataset.confirmed = '1'
+                            reminderBtn.textContent = 'Confirm Send Reminder?'
+                            reminderBtn.style.background = '#dc2626'
+                            reminderBtn.style.color = '#fff'
+                            setTimeout(() => { delete reminderBtn.dataset.confirmed; reminderBtn.textContent = 'Send Reminder in Chat'; reminderBtn.style.background = 'rgba(234,179,8,0.2)'; reminderBtn.style.color = '#fbbf24' }, 3000)
+                            return
+                        }
+                        delete reminderBtn.dataset.confirmed
+                        reminderBtn.disabled = true
+                        reminderBtn.textContent = 'Sending...'
+                        reminderBtn.style.background = 'rgba(234,179,8,0.2)'
+                        reminderBtn.style.color = '#fbbf24'
+                        const resEl = document.getElementById('adminReminderResult')
+                        try {
+                            const res = await fetch('/api/debug/send-reminder', {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({ airdropId: aid })
+                            })
+                            const rdata = await res.json()
+                            if (!res.ok) throw new Error(rdata.error || 'Failed')
+                            resEl.innerHTML = `<span style="color:#22c55e;">${escapeHtml(rdata.message)}${rdata.unresolved > 0 ? ` (${rdata.unresolved} could not be resolved)` : ''}</span>`
+                        } catch (err) {
+                            resEl.innerHTML = `<span style="color:#ef4444;">${err.message}</span>`
+                        } finally {
+                            reminderBtn.disabled = false
+                            reminderBtn.textContent = 'Send Reminder in Chat'
+                        }
+                    })
+                }
             } catch (err) {
                 resultEl.innerHTML = `<div class="error">${err.message}</div>`
                 resultEl.classList.remove('hidden')

@@ -190,6 +190,11 @@ function generateId(): string {
     return `airdrop_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`
 }
 
+function shortAddress(addr: string): string {
+    if (addr.length <= 10) return addr
+    return addr.slice(0, 6) + '…' + addr.slice(-4)
+}
+
 /** Calculate holder tax, admin tax, and net amounts from a gross total. */
 function computeTax(totalWei: bigint): {
     holderTaxAmount: bigint
@@ -1176,6 +1181,60 @@ app.post('/api/debug/add-tax-holder', async (c) => {
     }
 })
 
+// Debug: send reminder to missing holders for a joinable space airdrop
+app.post('/api/debug/send-reminder', async (c) => {
+    try {
+        const body = await c.req.json()
+        const airdropId = (body.airdropId ?? '').trim()
+        if (!airdropId) return c.json({ error: 'Missing airdropId' }, 400)
+
+        const airdrop = getAirdrop(airdropId)
+        if (!airdrop) return c.json({ error: 'Airdrop not found' }, 404)
+
+        const isJoinableSpace = airdrop.airdropType === 'space' && (airdrop.maxParticipants || 0) > 0
+        if (!isJoinableSpace) return c.json({ error: 'Not a joinable space airdrop' }, 400)
+        if (airdrop.status !== 'funded') return c.json({ error: 'Airdrop is not in funded status' }, 400)
+        if (!airdrop.depositChannelId) return c.json({ error: 'No channel ID stored for this airdrop' }, 400)
+
+        const allHolders = getSpaceHolders(airdrop.spaceNftAddress!) || []
+        const participantSet = new Set(airdrop.participants.map(p => p.toLowerCase()))
+        const missingWallets = allHolders.filter(h => !participantSet.has(h.toLowerCase()))
+
+        if (missingWallets.length === 0) return c.json({ ok: true, message: 'All eligible holders have already joined!' })
+
+        // Reverse lookup: smart account → userId
+        const walletToUserId = getUserIdsByWallets(missingWallets)
+        const namesMap = getParticipantNames(missingWallets)
+
+        const mentions: { userId: string, displayName: string }[] = []
+        const mentionTags: string[] = []
+
+        for (const wallet of missingWallets) {
+            const userId = walletToUserId.get(wallet.toLowerCase())
+            if (userId) {
+                const name = namesMap.get(wallet.toLowerCase()) || shortAddress(userId)
+                mentions.push({ userId, displayName: name })
+                mentionTags.push(`<@${userId}>`)
+            }
+        }
+
+        if (mentions.length === 0) {
+            return c.json({ error: 'Could not resolve any missing holders to userIds. They may not have interacted with the bot yet.' }, 400)
+        }
+
+        const maxP = airdrop.maxParticipants || 0
+        const slots = maxP - airdrop.participants.length
+        const title = airdrop.title ? `**${airdrop.title}**` : 'a space airdrop'
+        const msg = `Reminder: ${title} still has ${slots} slot${slots !== 1 ? 's' : ''} open!\n\n${mentionTags.join(' ')} — don't miss out!`
+
+        await (bot as any).sendMessage(airdrop.depositChannelId, msg, { mentions })
+        return c.json({ ok: true, message: `Reminder sent to ${mentions.length} members in chat`, tagged: mentions.length, unresolved: missingWallets.length - mentions.length })
+    } catch (err) {
+        console.error('[Reminder] Failed:', err)
+        return c.json({ error: 'Failed to send reminder', details: String(err) }, 500)
+    }
+})
+
 // Debug: resolve userId → smart account
 app.get('/api/debug/resolve-wallet', async (c) => {
     const userId = (c.req.query('userId') ?? '').trim()
@@ -1587,7 +1646,20 @@ app.get('/api/airdrop/:id', (c) => {
     if (!airdrop) {
         return c.json({ error: 'Airdrop not found' }, 404)
     }
-    return c.json(airdropToResponse(airdrop))
+    const resp: any = airdropToResponse(airdrop)
+
+    // For joinable space airdrops, include eligible holders who haven't joined
+    if (resp.isSpaceJoinMode && airdrop.spaceNftAddress) {
+        const allHolders = getSpaceHolders(airdrop.spaceNftAddress) || []
+        const participantSet = new Set(airdrop.participants.map(p => p.toLowerCase()))
+        const namesMap = getParticipantNames(allHolders)
+        resp.missingHolders = allHolders
+            .filter(h => !participantSet.has(h.toLowerCase()))
+            .map(h => ({ address: h, name: namesMap.get(h.toLowerCase()) || null }))
+        resp.totalEligible = allHolders.length
+    }
+
+    return c.json(resp)
 })
 
 // Request deposit via Towns interaction (sends tx prompt to user in channel)
